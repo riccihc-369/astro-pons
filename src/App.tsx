@@ -155,7 +155,23 @@ export default function App() {
   const azLock = deltaAz !== null && Math.abs(deltaAz) <= 1.5;
   const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
   const targetLock = azLock && altLock;
+const arMarker = useMemo(() => {
+  if (deltaAz === null || deltaAlt === null) return null;
 
+  const horizontalFovDeg = 60;
+  const verticalFovDeg = 45;
+
+  const rawX = 50 + (deltaAz / (horizontalFovDeg / 2)) * 50;
+  const rawY = 50 - (deltaAlt / (verticalFovDeg / 2)) * 50;
+
+  const inside = rawX >= 0 && rawX <= 100 && rawY >= 0 && rawY <= 100;
+
+  return {
+    x: clamp(rawX, 6, 94),
+    y: clamp(rawY, 6, 94),
+    inside,
+  };
+}, [deltaAz, deltaAlt]);
   useEffect(() => {
     if (!navigator.geolocation) {
       setGps((prev) => ({
@@ -476,32 +492,71 @@ export default function App() {
         ))}
       </section>
 
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>AR Camera — prossimo modulo</h2>
-        <p style={styles.smallText}>
-          Test base camera posteriore. Serve HTTPS o localhost. Su Vercel è ok.
-        </p>
+      <section style={styles.arCard}>
+  <h2 style={styles.sectionTitle}>AR Sky Overlay</h2>
+  <p style={styles.smallText}>
+    Camera posteriore + overlay target. Punta il telefono finché il marker entra nel mirino centrale.
+  </p>
 
-        <div style={styles.buttonRow}>
-          <button style={styles.primaryButton} onClick={startCamera}>
-            Test Camera
-          </button>
-          <button style={styles.secondaryButton} onClick={stopCamera}>
-            Stop Camera
-          </button>
+  <div style={styles.buttonRow}>
+    <button style={styles.primaryButton} onClick={startCamera}>
+      Avvia AR Camera
+    </button>
+    <button style={styles.secondaryButton} onClick={stopCamera}>
+      Stop Camera
+    </button>
+  </div>
+
+  {cameraError && <p style={styles.error}>{cameraError}</p>}
+
+  <div style={styles.arFrame}>
+    {cameraActive ? (
+      <video ref={videoRef} playsInline muted style={styles.arVideo} />
+    ) : (
+      <div style={styles.cameraPlaceholder}>Camera non attiva</div>
+    )}
+
+    <div style={styles.arOverlay}>
+      <div style={styles.reticle}>
+        <div style={styles.reticleH} />
+        <div style={styles.reticleV} />
+      </div>
+
+      {arMarker && (
+        <div
+          style={{
+            ...styles.marker,
+            ...(arMarker.inside ? {} : styles.markerOffscreen),
+            left: `${arMarker.x}%`,
+            top: `${arMarker.y}%`,
+          }}
+        >
+          <div style={styles.markerDot} />
+          <div style={styles.markerLabel}>{selectedTarget?.label ?? "Target"}</div>
         </div>
+      )}
 
-        {cameraError && <p style={styles.error}>{cameraError}</p>}
+      <div style={styles.arInstruction}>
+        {targetLock ? (
+          <span style={styles.arLockText}>✓ TARGET IN CAMERA</span>
+        ) : (
+          <>
+            <span>{directionText(deltaAz)}</span>
+            <span>{altitudeText(deltaAlt)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  </div>
 
-        <div style={styles.videoWrap}>
-          {cameraActive ? (
-            <video ref={videoRef} playsInline muted style={styles.video} />
-          ) : (
-            <div style={styles.videoPlaceholder}>Camera non attiva</div>
-          )}
-        </div>
-      </section>
-    </main>
+  <div style={styles.arInfoGrid}>
+    <div style={styles.arMiniMetric}>Delta Az {formatDeg(deltaAz)}</div>
+    <div style={styles.arMiniMetric}>Delta Alt {formatDeg(deltaAlt)}</div>
+    <div style={styles.arMiniMetric}>
+      Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
+    </div>
+  </div>
+</section>   </main>
   );
 }
 
@@ -774,4 +829,124 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     marginTop: 12,
   },
+  arCard: {
+  background: "#10162d",
+  borderRadius: 16,
+  padding: 18,
+  marginBottom: 18,
+  border: "1px solid rgba(0,183,255,0.35)",
+},
+arFrame: {
+  position: "relative",
+  marginTop: 16,
+  background: "#000",
+  borderRadius: 18,
+  overflow: "hidden",
+  minHeight: 360,
+  border: "2px solid rgba(255,255,255,0.12)",
+},
+arVideo: {
+  width: "100%",
+  height: 420,
+  display: "block",
+  objectFit: "cover",
+},
+cameraPlaceholder: {
+  height: 420,
+  display: "grid",
+  placeItems: "center",
+  color: "#8d93aa",
+  fontWeight: 900,
+  fontSize: 18,
+},
+arOverlay: {
+  position: "absolute",
+  inset: 0,
+  pointerEvents: "none",
+},
+reticle: {
+  position: "absolute",
+  left: "50%",
+  top: "50%",
+  width: 96,
+  height: 96,
+  transform: "translate(-50%, -50%)",
+  border: "2px solid rgba(255,255,255,0.75)",
+  borderRadius: "50%",
+  boxShadow: "0 0 24px rgba(255,255,255,0.25)",
+},
+reticleH: {
+  position: "absolute",
+  left: -28,
+  right: -28,
+  top: "50%",
+  height: 2,
+  background: "rgba(255,255,255,0.75)",
+},
+reticleV: {
+  position: "absolute",
+  top: -28,
+  bottom: -28,
+  left: "50%",
+  width: 2,
+  background: "rgba(255,255,255,0.75)",
+},
+marker: {
+  position: "absolute",
+  transform: "translate(-50%, -50%)",
+  display: "grid",
+  placeItems: "center",
+  gap: 6,
+},
+markerOffscreen: {
+  opacity: 0.75,
+},
+markerDot: {
+  width: 34,
+  height: 34,
+  borderRadius: "50%",
+  border: "4px solid #ffd400",
+  boxShadow: "0 0 24px rgba(255,212,0,0.9)",
+  background: "rgba(255,212,0,0.15)",
+},
+markerLabel: {
+  color: "#ffd400",
+  fontSize: 15,
+  fontWeight: 1000,
+  textShadow: "0 2px 8px rgba(0,0,0,0.9)",
+},
+arInstruction: {
+  position: "absolute",
+  left: 14,
+  right: 14,
+  bottom: 14,
+  display: "grid",
+  gap: 6,
+  background: "rgba(0,0,0,0.65)",
+  borderRadius: 14,
+  padding: 14,
+  color: "#ffd400",
+  fontSize: 22,
+  fontWeight: 1000,
+  textAlign: "center",
+},
+arLockText: {
+  color: "#15ff31",
+  fontSize: 24,
+  fontWeight: 1000,
+},
+arInfoGrid: {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gap: 8,
+  marginTop: 12,
+},
+arMiniMetric: {
+  background: "#11162c",
+  borderRadius: 10,
+  padding: 10,
+  color: "#e8eaf5",
+  fontWeight: 900,
+  textAlign: "center",
+},
 };
