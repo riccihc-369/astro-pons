@@ -18,6 +18,12 @@ type DeviceOrientationEventWithWebkit = DeviceOrientationEvent & {
   webkitCompassAccuracy?: number;
 };
 
+type OrientationSample = {
+  heading: number;
+  pitch: number; // inclinazione avanti/indietro
+  roll: number;  // inclinazione laterale
+};
+
 type WindowWithPermission = Window & {
   DeviceOrientationEvent?: {
     requestPermission?: () => Promise<"granted" | "denied">;
@@ -35,11 +41,15 @@ function normalizeAngle(deg: number): number {
 export default function App() {
   const [bodies, setBodies] = useState<CelestialBody[]>([]);
   const [selectedBody, setSelectedBody] = useState<string>("Moon");
-  const [latitude, setLatitude] = useState<number | null>(null);
-  const [longitude, setLongitude] = useState<number | null>(null);
-  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [latitude, setLatitude] = useState<number>(0);
+  const [longitude, setLongitude] = useState<number>(0);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number>(0);
   const [gpsError, setGpsError] = useState<string>("");
-  const [heading, setHeading] = useState<number | null>(null);
+  // Precision Mode: heading smoothing, pitch/tilt
+  const [heading, setHeading] = useState<number>(0);
+  const [pitch, setPitch] = useState<number>(0);
+  const [roll, setRoll] = useState<number>(0);
+  const headingSamples = useRef<OrientationSample[]>([]);
   const [compassError, setCompassError] = useState<string>("");
   const [compassActive, setCompassActive] = useState(false);
   const [offset, setOffset] = useState<number>(0);
@@ -91,7 +101,7 @@ export default function App() {
   // Calcola corpi celesti ogni 5 secondi
   useEffect(() => {
     const calculateBodies = () => {
-      if (latitude === null || longitude === null) return;
+      if (!latitude || !longitude) return;
 
       const now = new Date();
       const observer = new Observer(latitude, longitude, 0);
@@ -131,25 +141,49 @@ export default function App() {
     };
   }, [latitude, longitude]);
 
-  // Listener per DeviceOrientationEvent
+  // Listener per DeviceOrientationEvent con smoothing e pitch/roll
   useEffect(() => {
     if (!compassActive) return;
 
     const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
       const evt = event as DeviceOrientationEventWithWebkit;
-
+      let rawHeading: number | undefined;
       // Preferisci webkitCompassHeading (iOS Safari)
       if (evt.webkitCompassHeading !== undefined) {
-        setHeading(evt.webkitCompassHeading);
+        rawHeading = evt.webkitCompassHeading;
       } else if (evt.alpha !== undefined) {
-        // Fallback: usa alpha convertito in heading approssimativo
-        setHeading(evt.alpha);
+        rawHeading = evt.alpha;
+      }
+      // Pitch: inclinazione avanti/indietro (beta)
+      // Roll: inclinazione laterale (gamma)
+      const rawPitch = evt.beta !== undefined ? evt.beta : 0;
+      const rawRoll = evt.gamma !== undefined ? evt.gamma : 0;
+
+      if (typeof rawHeading === "number") {
+        // Aggiorna buffer
+        headingSamples.current.push({ heading: rawHeading, pitch: rawPitch, roll: rawRoll });
+        if (headingSamples.current.length > 10) headingSamples.current.shift();
+        // Calcola media mobile
+        const avg = headingSamples.current.reduce(
+          (acc, s) => {
+            acc.heading += s.heading;
+            acc.pitch += s.pitch;
+            acc.roll += s.roll;
+            return acc;
+          },
+          { heading: 0, pitch: 0, roll: 0 }
+        );
+        const n = headingSamples.current.length;
+        setHeading(avg.heading / n);
+        setPitch(avg.pitch / n);
+        setRoll(avg.roll / n);
       }
     };
 
     window.addEventListener("deviceorientation", handleDeviceOrientation);
     return () => {
       window.removeEventListener("deviceorientation", handleDeviceOrientation);
+      headingSamples.current = [];
     };
   }, [compassActive]);
 
@@ -184,7 +218,7 @@ export default function App() {
 
   // Calibra sulla Luna
   const calibrateOnMoon = () => {
-    if (heading === null) {
+    if (typeof heading !== "number" || isNaN(heading)) {
       setCompassError("Heading non disponibile");
       return;
     }
@@ -212,22 +246,28 @@ export default function App() {
   };
 
   // Calcola heading corretto applicando offset
-  const correctedHeading =
-    heading !== null ? heading + offset : null;
+  const correctedHeading = heading + offset;
 
-  // Calcola delta per il corpo selezionato
+  // Calcola delta azimut e delta elevazione (pitch)
   const selectedBodyData = bodies.find((b) => b.name === selectedBody);
-  const delta =
-    selectedBodyData && correctedHeading !== null
-      ? normalizeAngle(selectedBodyData.azimuth - correctedHeading)
-      : null;
+  // delta azimut
+  const deltaAz = selectedBodyData
+    ? normalizeAngle(selectedBodyData.azimuth - correctedHeading)
+    : 0;
+  // delta elevazione
+  const deltaEl = selectedBodyData
+    ? selectedBodyData.altitude - pitch
+    : 0;
 
-  // Determina indicazione direzionale
-  const getDirectionIndicator = () => {
-    if (delta === null) return "";
-    if (Math.abs(delta) < 5) return "✓ Centrato";
-    if (delta > 0) return "← Ruota a sinistra";
-    return "Ruota a destra →";
+  // Precision Mode: indicazione telescopio
+  const getTelescopeIndicator = () => {
+    if (!selectedBodyData) return "";
+    const lock = Math.abs(deltaAz) < 1 && Math.abs(deltaEl) < 1;
+    if (lock) return "🎯 LOCK";
+    let arrow = "";
+    if (Math.abs(deltaAz) >= 1) arrow += deltaAz > 0 ? "← " : "→ ";
+    if (Math.abs(deltaEl) >= 1) arrow += deltaEl > 0 ? "⬆" : "⬇";
+    return arrow.trim();
   };
 
   // Status complessivo
@@ -240,10 +280,12 @@ export default function App() {
       if (gpsAccuracy) parts.push(`(±${gpsAccuracy.toFixed(0)}m)`);
     }
     if (gpsError) parts.push(`GPS: ${gpsError}`);
-    if (heading !== null) parts.push(`Heading: ${heading.toFixed(1)}°`);
+    parts.push(`Heading: ${heading.toFixed(1)}°`);
+    parts.push(`Pitch: ${pitch.toFixed(1)}°`);
+    parts.push(`Tilt: ${roll.toFixed(1)}°`);
     if (compassError) parts.push(`Bussola: ${compassError}`);
     setStatus(parts.join(" | "));
-  }, [latitude, longitude, gpsAccuracy, gpsError, heading, compassError]);
+  }, [latitude, longitude, gpsAccuracy, gpsError, heading, pitch, roll, compassError]);
 
   return (
     <div
@@ -300,7 +342,7 @@ export default function App() {
       )}
 
       {/* Sezione Calibrazione (visibile solo se bussola attiva) */}
-      {compassActive && heading !== null && (
+      {compassActive && (
         <div
           style={{
             backgroundColor: "#1a1f3a",
@@ -363,7 +405,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Target Selezionato e Indicazione Direzionale */}
+      {/* Target Selezionato e Indicazione Telescopio */}
       {compassActive && selectedBodyData && (
         <div
           style={{
@@ -379,20 +421,21 @@ export default function App() {
           </div>
           <div
             style={{
-              fontSize: "28px",
+              fontSize: "32px",
               fontWeight: "bold",
               color:
-                delta !== null && Math.abs(delta) < 5
+                Math.abs(deltaAz) < 1 && Math.abs(deltaEl) < 1
                   ? "#00ff00"
                   : "#ffd700",
               marginBottom: "8px",
+              letterSpacing: "2px",
             }}
           >
-            {getDirectionIndicator()}
+            {getTelescopeIndicator()}
           </div>
-          {delta !== null && (
+          {selectedBodyData && (
             <div style={{ fontSize: "12px", color: "#999" }}>
-              Differenza: {delta.toFixed(1)}°
+              ΔAz: {deltaAz.toFixed(1)}° | ΔEl: {deltaEl.toFixed(1)}°
             </div>
           )}
         </div>
