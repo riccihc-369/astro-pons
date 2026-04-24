@@ -43,60 +43,55 @@ const SKY_BODIES: SkyBody[] = [
   { body: Body.Saturn, label: "Saturno" },
 ];
 
-function normalize360(value: number): number {
-  return ((value % 360) + 360) % 360;
+function normalize360(v: number) {
+  return ((v % 360) + 360) % 360;
 }
 
-function normalize180(value: number): number {
-  const normalized = normalize360(value);
-  return normalized > 180 ? normalized - 360 : normalized;
+function normalize180(v: number) {
+  const n = normalize360(v);
+  return n > 180 ? n - 360 : n;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, v));
 }
 
-function circularMeanDeg(values: number[]): number | null {
-  if (values.length === 0) return null;
+function circularMeanDeg(values: number[]) {
+  if (!values.length) return null;
 
-  let sinSum = 0;
-  let cosSum = 0;
+  let sin = 0;
+  let cos = 0;
 
-  for (const deg of values) {
-    const rad = (deg * Math.PI) / 180;
-    sinSum += Math.sin(rad);
-    cosSum += Math.cos(rad);
+  for (const d of values) {
+    const r = (d * Math.PI) / 180;
+    sin += Math.sin(r);
+    cos += Math.cos(r);
   }
 
-  const meanRad = Math.atan2(sinSum / values.length, cosSum / values.length);
-  return normalize360((meanRad * 180) / Math.PI);
+  const a = Math.atan2(sin / values.length, cos / values.length);
+  return normalize360((a * 180) / Math.PI);
 }
 
-function estimateDeviceAltitude(beta: number | null): number | null {
-  if (beta === null || !Number.isFinite(beta)) return null;
+function formatDeg(v: number | null, digits = 1) {
+  if (v === null || !Number.isFinite(v)) return "—";
+  return `${v.toFixed(digits)}°`;
+}
 
-  // Stima pratica per uso iPhone in portrait:
-  // beta ~ 90° = telefono verticale verso orizzonte => altitudine ~ 0°
-  // beta ~ 60° = telefono inclinato verso alto => altitudine ~ +30°
-  // beta ~ 120° = telefono inclinato verso basso => altitudine ~ -30°
+function estimateAltitude(beta: number | null) {
+  if (beta === null) return null;
   return clamp(90 - beta, -90, 90);
 }
 
-function formatDeg(value: number | null, digits = 1): string {
-  if (value === null || !Number.isFinite(value)) return "—";
-  return `${value.toFixed(digits)}°`;
+function directionText(delta: number | null) {
+  if (delta === null) return "Bussola non attiva";
+  if (Math.abs(delta) <= 1.5) return "Azimut centrato";
+  return delta > 0 ? "Ruota a destra →" : "← Ruota a sinistra";
 }
 
-function directionText(deltaAz: number | null): string {
-  if (deltaAz === null) return "Bussola non attiva";
-  if (Math.abs(deltaAz) <= 1.5) return "Azimut centrato";
-  return deltaAz > 0 ? "Ruota a destra →" : "← Ruota a sinistra";
-}
-
-function altitudeText(deltaAlt: number | null): string {
-  if (deltaAlt === null) return "Inclinazione non disponibile";
-  if (Math.abs(deltaAlt) <= 2.0) return "Altezza centrata";
-  return deltaAlt > 0 ? "Alza ↑" : "Abbassa ↓";
+function altitudeText(delta: number | null) {
+  if (delta === null) return "Inclinazione non disponibile";
+  if (Math.abs(delta) <= 2) return "Altezza centrata";
+  return delta > 0 ? "Alza ↑" : "Abbassa ↓";
 }
 
 export default function App() {
@@ -122,19 +117,20 @@ export default function App() {
 
   const [offsetDeg, setOffsetDeg] = useState<number>(() => {
     const saved = localStorage.getItem(OFFSET_KEY);
-    const parsed = saved === null ? 0 : Number(saved);
+    const parsed = saved ? Number(saved) : 0;
     return Number.isFinite(parsed) ? parsed : 0;
   });
 
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isStandalone, setIsStandalone] = useState(false);
 
   const headingSamplesRef = useRef<number[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const selectedTarget = useMemo(() => {
-    return rows.find((row) => row.id === selectedId) ?? rows.find((row) => row.id === "Luna") ?? null;
+    return rows.find((r) => r.id === selectedId) ?? rows[1] ?? null;
   }, [rows, selectedId]);
 
   const correctedHeading = useMemo(() => {
@@ -153,34 +149,34 @@ export default function App() {
   }, [selectedTarget, orientation.deviceAltitude]);
 
   const azLock = deltaAz !== null && Math.abs(deltaAz) <= 1.5;
-  const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
+  const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2;
   const targetLock = azLock && altLock;
-const arMarker = useMemo(() => {
-  if (deltaAz === null || deltaAlt === null) return null;
 
-  const horizontalFovDeg = 60;
-  const verticalFovDeg = 45;
+  const arMarker = useMemo(() => {
+    if (deltaAz === null || deltaAlt === null) return null;
 
-  const rawX = 50 + (deltaAz / (horizontalFovDeg / 2)) * 50;
-  const rawY = 50 - (deltaAlt / (verticalFovDeg / 2)) * 50;
+    const hFov = 60;
+    const vFov = 45;
 
-  const inside = rawX >= 0 && rawX <= 100 && rawY >= 0 && rawY <= 100;
+    const rawX = 50 + (deltaAz / (hFov / 2)) * 50;
+    const rawY = 50 - (deltaAlt / (vFov / 2)) * 50;
 
-  return {
-    x: clamp(rawX, 6, 94),
-    y: clamp(rawY, 6, 94),
-    inside,
-  };
-}, [deltaAz, deltaAlt]);
+    return {
+      x: clamp(rawX, 6, 94),
+      y: clamp(rawY, 6, 94),
+      inside: rawX >= 0 && rawX <= 100 && rawY >= 0 && rawY <= 100,
+    };
+  }, [deltaAz, deltaAlt]);
+
   useEffect(() => {
-    if (!navigator.geolocation) {
-      setGps((prev) => ({
-        ...prev,
-        error: "GPS non disponibile su questo browser.",
-      }));
-      return;
-    }
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      (window.navigator as any).standalone === true;
 
+    setIsStandalone(standalone);
+  }, []);
+
+  useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         setGps({
@@ -191,10 +187,7 @@ const arMarker = useMemo(() => {
         });
       },
       (err) => {
-        setGps((prev) => ({
-          ...prev,
-          error: `GPS: ${err.message}`,
-        }));
+        setGps((p) => ({ ...p, error: err.message }));
       },
       {
         enableHighAccuracy: true,
@@ -209,11 +202,11 @@ const arMarker = useMemo(() => {
   useEffect(() => {
     if (gps.lat === null || gps.lon === null) return;
 
-    const calculate = () => {
+    const run = () => {
       const now = new Date();
       const observer = new Observer(gps.lat!, gps.lon!, 0);
 
-      const nextRows = SKY_BODIES.map(({ body, label }) => {
+      const data = SKY_BODIES.map(({ body, label }) => {
         const eq = Equator(body, now, observer, true, true);
         const hor = Horizon(now, observer, eq.ra, eq.dec, "normal");
 
@@ -226,29 +219,30 @@ const arMarker = useMemo(() => {
         };
       });
 
-      setRows(nextRows);
+      setRows(data);
     };
 
-    calculate();
-    const interval = window.setInterval(calculate, 5000);
-
-    return () => window.clearInterval(interval);
+    run();
+    const t = window.setInterval(run, 5000);
+    return () => clearInterval(t);
   }, [gps.lat, gps.lon]);
 
-  async function enableCompass() {
-    setOrientation((prev) => ({ ...prev, error: null }));
-
-    const DeviceOrientation = DeviceOrientationEvent as unknown as {
-      requestPermission?: () => Promise<"granted" | "denied">;
+  useEffect(() => {
+    return () => {
+      window.removeEventListener("deviceorientation", handleOrientation, true);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
     };
+  }, []);
+
+  async function enableCompass() {
+    const DeviceOrientation = DeviceOrientationEvent as any;
 
     try {
       if (typeof DeviceOrientation.requestPermission === "function") {
-        const permission = await DeviceOrientation.requestPermission();
-        if (permission !== "granted") {
-          setOrientation((prev) => ({
-            ...prev,
-            enabled: false,
+        const res = await DeviceOrientation.requestPermission();
+        if (res !== "granted") {
+          setOrientation((p) => ({
+            ...p,
             error: "Permesso orientamento negato.",
           }));
           return;
@@ -257,64 +251,57 @@ const arMarker = useMemo(() => {
 
       window.addEventListener("deviceorientation", handleOrientation, true);
 
-      setOrientation((prev) => ({
-        ...prev,
+      setOrientation((p) => ({
+        ...p,
         enabled: true,
         error: null,
       }));
-    } catch (error) {
-      setOrientation((prev) => ({
-        ...prev,
-        enabled: false,
-        error: error instanceof Error ? error.message : "Errore attivazione bussola.",
+    } catch (e) {
+      setOrientation((p) => ({
+        ...p,
+        error: "Errore bussola.",
       }));
     }
   }
 
   function handleOrientation(event: DeviceOrientationEvent) {
-    const compassEvent = event as DeviceOrientationEvent & {
-      webkitCompassHeading?: number;
-    };
+    const e = event as any;
 
-    let rawHeading: number | null = null;
+    let raw: number | null = null;
 
-    if (
-      typeof compassEvent.webkitCompassHeading === "number" &&
-      Number.isFinite(compassEvent.webkitCompassHeading)
-    ) {
-      rawHeading = normalize360(compassEvent.webkitCompassHeading);
-    } else if (typeof event.alpha === "number" && Number.isFinite(event.alpha)) {
-      rawHeading = normalize360(360 - event.alpha);
+    if (typeof e.webkitCompassHeading === "number") {
+      raw = normalize360(e.webkitCompassHeading);
+    } else if (typeof event.alpha === "number") {
+      raw = normalize360(360 - event.alpha);
     }
 
-    const beta = typeof event.beta === "number" && Number.isFinite(event.beta) ? event.beta : null;
-    const gamma = typeof event.gamma === "number" && Number.isFinite(event.gamma) ? event.gamma : null;
-    const deviceAltitude = estimateDeviceAltitude(beta);
+    const beta =
+      typeof event.beta === "number" ? event.beta : null;
+    const gamma =
+      typeof event.gamma === "number" ? event.gamma : null;
 
-    if (rawHeading !== null) {
-      headingSamplesRef.current = [...headingSamplesRef.current, rawHeading].slice(-10);
+    if (raw !== null) {
+      headingSamplesRef.current = [...headingSamplesRef.current, raw].slice(-10);
     }
 
-    const smoothHeading = circularMeanDeg(headingSamplesRef.current);
-
-    setOrientation((prev) => ({
-      ...prev,
-      rawHeading,
-      smoothHeading,
+    setOrientation((p) => ({
+      ...p,
+      rawHeading: raw,
+      smoothHeading: circularMeanDeg(headingSamplesRef.current),
       beta,
       gamma,
-      deviceAltitude,
+      deviceAltitude: estimateAltitude(beta),
       error: null,
     }));
   }
 
   function calibrateOnMoon() {
-    const moon = rows.find((row) => row.id === "Luna");
+    const moon = rows.find((r) => r.id === "Luna");
     if (!moon || orientation.smoothHeading === null) return;
 
-    const nextOffset = normalize180(moon.azimuth - orientation.smoothHeading);
-    setOffsetDeg(nextOffset);
-    localStorage.setItem(OFFSET_KEY, String(nextOffset));
+    const next = normalize180(moon.azimuth - orientation.smoothHeading);
+    setOffsetDeg(next);
+    localStorage.setItem(OFFSET_KEY, String(next));
   }
 
   function resetCalibration() {
@@ -326,246 +313,144 @@ const arMarker = useMemo(() => {
     setCameraError(null);
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("Camera non disponibile. Serve HTTPS o localhost.");
+      setCameraError("Serve HTTPS o localhost.");
       return;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-        },
+        video: { facingMode: { ideal: "environment" } },
         audio: false,
       });
 
       streamRef.current = stream;
       setCameraActive(true);
 
-      window.setTimeout(() => {
+      setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           void videoRef.current.play();
         }
       }, 0);
-    } catch (error) {
-      setCameraError(error instanceof Error ? error.message : "Permesso camera negato.");
+    } catch {
+      if (isStandalone) {
+        setCameraError(
+          "Modalità App iPhone limitata. Apri Astro Pons in Safari per camera AR."
+        );
+      } else {
+        setCameraError("Permesso camera negato.");
+      }
     }
   }
 
   function stopCamera() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    if (videoRef.current) videoRef.current.srcObject = null;
 
     setCameraActive(false);
   }
 
-  useEffect(() => {
-    return () => {
-      window.removeEventListener("deviceorientation", handleOrientation, true);
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
-
   return (
     <main style={styles.page}>
-      <section style={styles.header}>
-        <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V3 — Precision Telescope + AR-ready</p>
-      </section>
+      <h1 style={styles.title}>Moon Compass</h1>
+      <p style={styles.subtitle}>V4.1 UX + AR Overlay</p>
 
-      <section style={styles.statusCard}>
+      <section style={styles.card}>
         <strong>
           Lat {gps.lat?.toFixed(4) ?? "—"} / Lon {gps.lon?.toFixed(4) ?? "—"}
         </strong>
-        <span>
-          {" | "}
-          GPS {gps.accuracy !== null ? `±${gps.accuracy.toFixed(0)}m` : "—"}
-          {" | "}
-          Heading {formatDeg(orientation.smoothHeading)}
-        </span>
-        {gps.error && <p style={styles.error}>{gps.error}</p>}
+        <div>
+          GPS {gps.accuracy ? `±${gps.accuracy.toFixed(0)}m` : "—"} | Heading{" "}
+          {formatDeg(orientation.smoothHeading)}
+        </div>
       </section>
 
       <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Bussola + Calibrazione</h2>
-
-        <div style={styles.grid2}>
-          <Info label="Heading raw" value={formatDeg(orientation.rawHeading)} />
-          <Info label="Heading smooth" value={formatDeg(orientation.smoothHeading)} />
-          <Info label="Offset calibrazione" value={formatDeg(offsetDeg)} />
-          <Info label="Heading corretto" value={formatDeg(correctedHeading)} />
-          <Info label="Pitch stimato" value={formatDeg(orientation.deviceAltitude)} />
-          <Info label="Beta/Gamma" value={`${formatDeg(orientation.beta)} / ${formatDeg(orientation.gamma)}`} />
-        </div>
-
-        {orientation.error && <p style={styles.error}>{orientation.error}</p>}
-
-        <div style={styles.buttonRow}>
-          <button style={styles.primaryButton} onClick={enableCompass}>
-            Attiva bussola
-          </button>
-          <button
-            style={styles.yellowButton}
-            onClick={calibrateOnMoon}
-            disabled={!rows.find((row) => row.id === "Luna") || orientation.smoothHeading === null}
-          >
-            Calibra su Luna
-          </button>
-          <button style={styles.secondaryButton} onClick={resetCalibration}>
-            Reset
-          </button>
-        </div>
+        <button style={styles.btnBlue} onClick={enableCompass}>
+          Attiva bussola
+        </button>
+        <button style={styles.btnYellow} onClick={calibrateOnMoon}>
+          Calibra su Luna
+        </button>
+        <button style={styles.btnGray} onClick={resetCalibration}>
+          Reset
+        </button>
       </section>
 
       <section style={targetLock ? styles.lockCard : styles.card}>
-        <h2 style={styles.sectionTitle}>Precision Telescope</h2>
-
-        <div style={styles.targetName}>
-          Target: <strong>{selectedTarget?.label ?? "—"}</strong>
-        </div>
+        <h2>Precision Telescope</h2>
+        <div>Target: {selectedTarget?.label}</div>
 
         {targetLock ? (
           <div style={styles.lockText}>✓ TARGET LOCK</div>
         ) : (
-          <div style={styles.precisionGrid}>
-            <div style={styles.directionBox}>
-              <div style={azLock ? styles.okText : styles.bigYellow}>{directionText(deltaAz)}</div>
-              <div style={styles.metric}>Delta Az: {formatDeg(deltaAz)}</div>
-            </div>
-
-            <div style={styles.directionBox}>
-              <div style={altLock ? styles.okText : styles.bigYellow}>{altitudeText(deltaAlt)}</div>
-              <div style={styles.metric}>Delta Alt: {formatDeg(deltaAlt)}</div>
-            </div>
-          </div>
+          <>
+            <div>{directionText(deltaAz)}</div>
+            <div>{altitudeText(deltaAlt)}</div>
+          </>
         )}
-
-        <div style={styles.lockGrid}>
-          <span style={azLock ? styles.greenBadge : styles.redBadge}>Azimut {azLock ? "OK" : "NO"}</span>
-          <span style={altLock ? styles.greenBadge : styles.redBadge}>Altezza {altLock ? "OK" : "NO"}</span>
-        </div>
       </section>
 
       <section style={styles.card}>
-        <label style={styles.label}>Seleziona target</label>
         <select
           style={styles.select}
           value={selectedId}
-          onChange={(event) => setSelectedId(event.target.value)}
+          onChange={(e) => setSelectedId(e.target.value)}
         >
-          {rows.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.label}
+          {rows.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.label}
             </option>
           ))}
         </select>
       </section>
 
-      <section style={styles.tableCard}>
-        <div style={styles.tableHeader}>
-          <span>Corpo</span>
-          <span>Azimut</span>
-          <span>Altezza</span>
-          <span>Stato</span>
-        </div>
-
-        {rows.map((row) => (
-          <button
-            key={row.id}
-            style={{
-              ...styles.tableRow,
-              ...(row.id === selectedId ? styles.selectedRow : {}),
-            }}
-            onClick={() => setSelectedId(row.id)}
-          >
-            <span>{row.label}</span>
-            <span>{row.azimuth.toFixed(1)}°</span>
-            <span>{row.altitude.toFixed(1)}°</span>
-            <span style={row.visible ? styles.visible : styles.hidden}>
-              {row.visible ? "Visibile" : "Sotto"}
-            </span>
-          </button>
-        ))}
-      </section>
-
       <section style={styles.arCard}>
-  <h2 style={styles.sectionTitle}>AR Sky Overlay</h2>
-  <p style={styles.smallText}>
-    Camera posteriore + overlay target. Punta il telefono finché il marker entra nel mirino centrale.
-  </p>
+        <h2>AR Sky Overlay</h2>
 
-  <div style={styles.buttonRow}>
-    <button style={styles.primaryButton} onClick={startCamera}>
-      Avvia AR Camera
-    </button>
-    <button style={styles.secondaryButton} onClick={stopCamera}>
-      Stop Camera
-    </button>
-  </div>
-
-  {cameraError && <p style={styles.error}>{cameraError}</p>}
-
-  <div style={styles.arFrame}>
-    {cameraActive ? (
-      <video ref={videoRef} playsInline muted style={styles.arVideo} />
-    ) : (
-      <div style={styles.cameraPlaceholder}>Camera non attiva</div>
-    )}
-
-    <div style={styles.arOverlay}>
-      <div style={styles.reticle}>
-        <div style={styles.reticleH} />
-        <div style={styles.reticleV} />
-      </div>
-
-      {arMarker && (
-        <div
-          style={{
-            ...styles.marker,
-            ...(arMarker.inside ? {} : styles.markerOffscreen),
-            left: `${arMarker.x}%`,
-            top: `${arMarker.y}%`,
-          }}
-        >
-          <div style={styles.markerDot} />
-          <div style={styles.markerLabel}>{selectedTarget?.label ?? "Target"}</div>
-        </div>
-      )}
-
-      <div style={styles.arInstruction}>
-        {targetLock ? (
-          <span style={styles.arLockText}>✓ TARGET IN CAMERA</span>
-        ) : (
-          <>
-            <span>{directionText(deltaAz)}</span>
-            <span>{altitudeText(deltaAlt)}</span>
-          </>
+        {isStandalone && (
+          <div style={styles.notice}>
+            Modalità App rilevata. Se la camera non parte, apri in Safari.
+          </div>
         )}
-      </div>
-    </div>
-  </div>
 
-  <div style={styles.arInfoGrid}>
-    <div style={styles.arMiniMetric}>Delta Az {formatDeg(deltaAz)}</div>
-    <div style={styles.arMiniMetric}>Delta Alt {formatDeg(deltaAlt)}</div>
-    <div style={styles.arMiniMetric}>
-      Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
-    </div>
-  </div>
-</section>   </main>
-  );
-}
+        <button style={styles.btnBlue} onClick={startCamera}>
+          Avvia AR Camera
+        </button>
 
-function Info({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={styles.infoBox}>
-      <div style={styles.infoLabel}>{label}</div>
-      <div style={styles.infoValue}>{value}</div>
-    </div>
+        <button style={styles.btnGray} onClick={stopCamera}>
+          Stop Camera
+        </button>
+
+        {cameraError && <p style={styles.error}>{cameraError}</p>}
+
+        <div style={styles.arFrame}>
+          {cameraActive ? (
+            <video ref={videoRef} playsInline muted style={styles.video} />
+          ) : (
+            <div style={styles.placeholder}>Camera non attiva</div>
+          )}
+
+          <div style={styles.overlay}>
+            <div style={styles.reticle} />
+
+            {arMarker && (
+              <div
+                style={{
+                  ...styles.marker,
+                  left: `${arMarker.x}%`,
+                  top: `${arMarker.y}%`,
+                }}
+              >
+                ●
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -573,380 +458,131 @@ const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
     background: "#05081f",
-    color: "#f3f5ff",
-    padding: "28px 16px 48px",
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  },
-  header: {
-    textAlign: "center",
-    marginBottom: 24,
+    color: "#fff",
+    padding: 16,
+    fontFamily: "system-ui",
   },
   title: {
     color: "#ffd400",
-    fontSize: 42,
-    lineHeight: 1,
-    margin: "0 0 10px",
-    fontWeight: 900,
+    fontSize: 40,
+    marginBottom: 0,
+    textAlign: "center",
   },
   subtitle: {
-    color: "#a9adbd",
-    fontSize: 18,
-    margin: 0,
-    fontWeight: 700,
-  },
-  statusCard: {
-    background: "#1b203a",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 18,
     textAlign: "center",
-    color: "#e6e8f2",
-    fontSize: 16,
+    color: "#9ca3b7",
+    marginTop: 6,
   },
   card: {
     background: "#1b203a",
     borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    boxShadow: "0 12px 32px rgba(0,0,0,0.2)",
+    padding: 16,
+    marginBottom: 16,
   },
   lockCard: {
     background: "#102b21",
-    border: "2px solid #15ff31",
     borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    boxShadow: "0 0 30px rgba(21,255,49,0.12)",
-  },
-  sectionTitle: {
-    margin: "0 0 16px",
-    fontSize: 22,
-    color: "#ffffff",
-    textAlign: "center",
-  },
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-  },
-  infoBox: {
-    background: "#11162c",
-    borderRadius: 12,
-    padding: 12,
-  },
-  infoLabel: {
-    color: "#9ca3b7",
-    fontSize: 12,
-    fontWeight: 700,
-    marginBottom: 4,
-  },
-  infoValue: {
-    color: "#ffffff",
-    fontSize: 17,
-    fontWeight: 800,
-  },
-  buttonRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 12,
-    marginTop: 16,
-  },
-  primaryButton: {
-    background: "#00b7ff",
-    color: "#00111a",
-    border: 0,
-    borderRadius: 12,
-    padding: "15px 18px",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  yellowButton: {
-    background: "#ffd400",
-    color: "#090909",
-    border: 0,
-    borderRadius: 12,
-    padding: "15px 18px",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  secondaryButton: {
-    background: "#707070",
-    color: "#ffffff",
-    border: 0,
-    borderRadius: 12,
-    padding: "15px 18px",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  targetName: {
-    textAlign: "center",
-    fontSize: 25,
-    marginBottom: 14,
-    color: "#ffffff",
+    padding: 16,
+    marginBottom: 16,
+    border: "2px solid #15ff31",
   },
   lockText: {
     color: "#15ff31",
-    textAlign: "center",
-    fontSize: 42,
-    fontWeight: 1000,
-    margin: "18px 0",
-  },
-  precisionGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 14,
-  },
-  directionBox: {
-    background: "#11162c",
-    borderRadius: 14,
-    padding: 16,
-    textAlign: "center",
-  },
-  bigYellow: {
-    color: "#ffd400",
-    fontSize: 30,
-    fontWeight: 1000,
-    lineHeight: 1.1,
-  },
-  okText: {
-    color: "#15ff31",
-    fontSize: 28,
-    fontWeight: 1000,
-    lineHeight: 1.1,
-  },
-  metric: {
-    color: "#a9adbd",
-    fontSize: 17,
-    fontWeight: 800,
-    marginTop: 8,
-  },
-  lockGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-    marginTop: 16,
-  },
-  greenBadge: {
-    background: "rgba(21,255,49,0.12)",
-    color: "#15ff31",
-    padding: 10,
-    borderRadius: 10,
-    textAlign: "center",
+    fontSize: 32,
     fontWeight: 900,
-  },
-  redBadge: {
-    background: "rgba(255,92,92,0.12)",
-    color: "#ff6666",
-    padding: 10,
-    borderRadius: 10,
     textAlign: "center",
-    fontWeight: 900,
   },
-  label: {
-    display: "block",
-    fontSize: 18,
-    fontWeight: 900,
+  btnBlue: {
+    width: "100%",
+    padding: 14,
     marginBottom: 10,
+    borderRadius: 12,
+    border: 0,
+    fontWeight: 900,
+    background: "#00b7ff",
+  },
+  btnYellow: {
+    width: "100%",
+    padding: 14,
+    marginBottom: 10,
+    borderRadius: 12,
+    border: 0,
+    fontWeight: 900,
+    background: "#ffd400",
+  },
+  btnGray: {
+    width: "100%",
+    padding: 14,
+    marginBottom: 10,
+    borderRadius: 12,
+    border: 0,
+    fontWeight: 900,
+    background: "#707070",
+    color: "#fff",
   },
   select: {
     width: "100%",
-    background: "#1b203a",
-    color: "#ffffff",
-    border: "2px solid #00b7ff",
+    padding: 14,
     borderRadius: 12,
-    padding: 15,
     fontSize: 18,
+  },
+  arCard: {
+    background: "#10162d",
+    borderRadius: 16,
+    padding: 16,
+  },
+  notice: {
+    background: "rgba(255,212,0,.12)",
+    color: "#ffd400",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
     fontWeight: 800,
   },
-  tableCard: {
-    background: "#11162c",
+  arFrame: {
+    position: "relative",
+    marginTop: 12,
+    background: "#000",
     borderRadius: 16,
     overflow: "hidden",
-    marginBottom: 18,
-  },
-  tableHeader: {
-    display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr",
-    gap: 8,
-    padding: "14px 12px",
-    background: "#1b203a",
-    color: "#ffffff",
-    fontWeight: 900,
-    fontSize: 15,
-  },
-  tableRow: {
-    display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr",
-    gap: 8,
-    width: "100%",
-    padding: "16px 12px",
-    background: "transparent",
-    border: 0,
-    borderTop: "1px solid rgba(255,255,255,0.08)",
-    color: "#e8eaf5",
-    fontSize: 16,
-    fontWeight: 800,
-    textAlign: "left",
-  },
-  selectedRow: {
-    background: "#303755",
-  },
-  visible: {
-    color: "#15ff31",
-  },
-  hidden: {
-    color: "#ff6666",
-  },
-  smallText: {
-    color: "#a9adbd",
-    fontSize: 15,
-    lineHeight: 1.4,
-  },
-  videoWrap: {
-    marginTop: 16,
-    background: "#05081f",
-    borderRadius: 16,
-    overflow: "hidden",
-    border: "1px solid rgba(255,255,255,0.1)",
-    minHeight: 220,
+    minHeight: 360,
   },
   video: {
     width: "100%",
-    display: "block",
-    minHeight: 220,
+    height: 420,
     objectFit: "cover",
+    display: "block",
   },
-  videoPlaceholder: {
-    minHeight: 220,
+  placeholder: {
+    height: 420,
     display: "grid",
     placeItems: "center",
-    color: "#8d93aa",
-    fontWeight: 800,
+    color: "#999",
+  },
+  overlay: {
+    position: "absolute",
+    inset: 0,
+  },
+  reticle: {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: 90,
+    height: 90,
+    transform: "translate(-50%, -50%)",
+    border: "2px solid white",
+    borderRadius: "50%",
+  },
+  marker: {
+    position: "absolute",
+    transform: "translate(-50%, -50%)",
+    color: "#ffd400",
+    fontSize: 28,
+    fontWeight: 900,
+    textShadow: "0 0 12px #ffd400",
   },
   error: {
     color: "#ff6666",
     fontWeight: 800,
-    marginTop: 12,
   },
-  arCard: {
-  background: "#10162d",
-  borderRadius: 16,
-  padding: 18,
-  marginBottom: 18,
-  border: "1px solid rgba(0,183,255,0.35)",
-},
-arFrame: {
-  position: "relative",
-  marginTop: 16,
-  background: "#000",
-  borderRadius: 18,
-  overflow: "hidden",
-  minHeight: 360,
-  border: "2px solid rgba(255,255,255,0.12)",
-},
-arVideo: {
-  width: "100%",
-  height: 420,
-  display: "block",
-  objectFit: "cover",
-},
-cameraPlaceholder: {
-  height: 420,
-  display: "grid",
-  placeItems: "center",
-  color: "#8d93aa",
-  fontWeight: 900,
-  fontSize: 18,
-},
-arOverlay: {
-  position: "absolute",
-  inset: 0,
-  pointerEvents: "none",
-},
-reticle: {
-  position: "absolute",
-  left: "50%",
-  top: "50%",
-  width: 96,
-  height: 96,
-  transform: "translate(-50%, -50%)",
-  border: "2px solid rgba(255,255,255,0.75)",
-  borderRadius: "50%",
-  boxShadow: "0 0 24px rgba(255,255,255,0.25)",
-},
-reticleH: {
-  position: "absolute",
-  left: -28,
-  right: -28,
-  top: "50%",
-  height: 2,
-  background: "rgba(255,255,255,0.75)",
-},
-reticleV: {
-  position: "absolute",
-  top: -28,
-  bottom: -28,
-  left: "50%",
-  width: 2,
-  background: "rgba(255,255,255,0.75)",
-},
-marker: {
-  position: "absolute",
-  transform: "translate(-50%, -50%)",
-  display: "grid",
-  placeItems: "center",
-  gap: 6,
-},
-markerOffscreen: {
-  opacity: 0.75,
-},
-markerDot: {
-  width: 34,
-  height: 34,
-  borderRadius: "50%",
-  border: "4px solid #ffd400",
-  boxShadow: "0 0 24px rgba(255,212,0,0.9)",
-  background: "rgba(255,212,0,0.15)",
-},
-markerLabel: {
-  color: "#ffd400",
-  fontSize: 15,
-  fontWeight: 1000,
-  textShadow: "0 2px 8px rgba(0,0,0,0.9)",
-},
-arInstruction: {
-  position: "absolute",
-  left: 14,
-  right: 14,
-  bottom: 14,
-  display: "grid",
-  gap: 6,
-  background: "rgba(0,0,0,0.65)",
-  borderRadius: 14,
-  padding: 14,
-  color: "#ffd400",
-  fontSize: 22,
-  fontWeight: 1000,
-  textAlign: "center",
-},
-arLockText: {
-  color: "#15ff31",
-  fontSize: 24,
-  fontWeight: 1000,
-},
-arInfoGrid: {
-  display: "grid",
-  gridTemplateColumns: "1fr",
-  gap: 8,
-  marginTop: 12,
-},
-arMiniMetric: {
-  background: "#11162c",
-  borderRadius: 10,
-  padding: 10,
-  color: "#e8eaf5",
-  fontWeight: 900,
-  textAlign: "center",
-},
 };
