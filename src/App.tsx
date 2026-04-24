@@ -1,573 +1,777 @@
-import { useEffect, useState, useRef } from "react";
-import {
-  Body,
-  Observer,
-  Equator,
-  Horizon,
-} from "astronomy-engine";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Body, Equator, Horizon, Observer } from "astronomy-engine";
 
-type CelestialBody = {
-  name: string;
-  bodyType: Body;
+type SkyBody = {
+  body: Body;
+  label: string;
+};
+
+type BodyRow = {
+  id: string;
+  label: string;
   azimuth: number;
   altitude: number;
+  visible: boolean;
 };
 
-type DeviceOrientationEventWithWebkit = DeviceOrientationEvent & {
-  webkitCompassHeading?: number;
-  webkitCompassAccuracy?: number;
+type GpsState = {
+  lat: number | null;
+  lon: number | null;
+  accuracy: number | null;
+  error: string | null;
 };
 
-type OrientationSample = {
-  heading: number;
-  pitch: number; // inclinazione avanti/indietro
-  roll: number;  // inclinazione laterale
+type OrientationState = {
+  enabled: boolean;
+  rawHeading: number | null;
+  smoothHeading: number | null;
+  beta: number | null;
+  gamma: number | null;
+  deviceAltitude: number | null;
+  error: string | null;
 };
 
-type WindowWithPermission = Window & {
-  DeviceOrientationEvent?: {
-    requestPermission?: () => Promise<"granted" | "denied">;
-  };
-};
+const OFFSET_KEY = "astroPons.compassOffsetDeg";
 
-// Normalizza un angolo tra -180 e 180
-function normalizeAngle(deg: number): number {
-  let n = deg % 360;
-  if (n > 180) n -= 360;
-  if (n < -180) n += 360;
-  return n;
+const SKY_BODIES: SkyBody[] = [
+  { body: Body.Sun, label: "Sole" },
+  { body: Body.Moon, label: "Luna" },
+  { body: Body.Mercury, label: "Mercurio" },
+  { body: Body.Venus, label: "Venere" },
+  { body: Body.Mars, label: "Marte" },
+  { body: Body.Jupiter, label: "Giove" },
+  { body: Body.Saturn, label: "Saturno" },
+];
+
+function normalize360(value: number): number {
+  return ((value % 360) + 360) % 360;
+}
+
+function normalize180(value: number): number {
+  const normalized = normalize360(value);
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function circularMeanDeg(values: number[]): number | null {
+  if (values.length === 0) return null;
+
+  let sinSum = 0;
+  let cosSum = 0;
+
+  for (const deg of values) {
+    const rad = (deg * Math.PI) / 180;
+    sinSum += Math.sin(rad);
+    cosSum += Math.cos(rad);
+  }
+
+  const meanRad = Math.atan2(sinSum / values.length, cosSum / values.length);
+  return normalize360((meanRad * 180) / Math.PI);
+}
+
+function estimateDeviceAltitude(beta: number | null): number | null {
+  if (beta === null || !Number.isFinite(beta)) return null;
+
+  // Stima pratica per uso iPhone in portrait:
+  // beta ~ 90° = telefono verticale verso orizzonte => altitudine ~ 0°
+  // beta ~ 60° = telefono inclinato verso alto => altitudine ~ +30°
+  // beta ~ 120° = telefono inclinato verso basso => altitudine ~ -30°
+  return clamp(90 - beta, -90, 90);
+}
+
+function formatDeg(value: number | null, digits = 1): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return `${value.toFixed(digits)}°`;
+}
+
+function directionText(deltaAz: number | null): string {
+  if (deltaAz === null) return "Bussola non attiva";
+  if (Math.abs(deltaAz) <= 1.5) return "Azimut centrato";
+  return deltaAz > 0 ? "Ruota a destra →" : "← Ruota a sinistra";
+}
+
+function altitudeText(deltaAlt: number | null): string {
+  if (deltaAlt === null) return "Inclinazione non disponibile";
+  if (Math.abs(deltaAlt) <= 2.0) return "Altezza centrata";
+  return deltaAlt > 0 ? "Alza ↑" : "Abbassa ↓";
 }
 
 export default function App() {
-  const [bodies, setBodies] = useState<CelestialBody[]>([]);
-  const [selectedBody, setSelectedBody] = useState<string>("Moon");
-  const [latitude, setLatitude] = useState<number>(0);
-  const [longitude, setLongitude] = useState<number>(0);
-  const [gpsAccuracy, setGpsAccuracy] = useState<number>(0);
-  const [gpsError, setGpsError] = useState<string>("");
-  // Precision Mode: heading smoothing, pitch/tilt
-  const [heading, setHeading] = useState<number>(0);
-  const [pitch, setPitch] = useState<number>(0);
-  const [roll, setRoll] = useState<number>(0);
-  const headingSamples = useRef<OrientationSample[]>([]);
-  const [compassError, setCompassError] = useState<string>("");
-  const [compassActive, setCompassActive] = useState(false);
-  const [offset, setOffset] = useState<number>(0);
-  const [status, setStatus] = useState("Avvio...");
+  const [gps, setGps] = useState<GpsState>({
+    lat: null,
+    lon: null,
+    accuracy: null,
+    error: null,
+  });
 
-  const gpsWatchIdRef = useRef<number | null>(null);
-  const astronomyIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const deviceOrientationRef = useRef<boolean>(false);
+  const [rows, setRows] = useState<BodyRow[]>([]);
+  const [selectedId, setSelectedId] = useState("Luna");
 
-  // Carica offset calibrazione da localStorage
-  useEffect(() => {
-    const savedOffset = localStorage.getItem("astroPons.compassOffsetDeg");
-    if (savedOffset) {
-      setOffset(parseFloat(savedOffset));
-    }
-  }, []);
+  const [orientation, setOrientation] = useState<OrientationState>({
+    enabled: false,
+    rawHeading: null,
+    smoothHeading: null,
+    beta: null,
+    gamma: null,
+    deviceAltitude: null,
+    error: null,
+  });
 
-  // Configura GPS con watchPosition (high accuracy)
+  const [offsetDeg, setOffsetDeg] = useState<number>(() => {
+    const saved = localStorage.getItem(OFFSET_KEY);
+    const parsed = saved === null ? 0 : Number(saved);
+    return Number.isFinite(parsed) ? parsed : 0;
+  });
+
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  const headingSamplesRef = useRef<number[]>([]);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const selectedTarget = useMemo(() => {
+    return rows.find((row) => row.id === selectedId) ?? rows.find((row) => row.id === "Luna") ?? null;
+  }, [rows, selectedId]);
+
+  const correctedHeading = useMemo(() => {
+    if (orientation.smoothHeading === null) return null;
+    return normalize360(orientation.smoothHeading + offsetDeg);
+  }, [orientation.smoothHeading, offsetDeg]);
+
+  const deltaAz = useMemo(() => {
+    if (!selectedTarget || correctedHeading === null) return null;
+    return normalize180(selectedTarget.azimuth - correctedHeading);
+  }, [selectedTarget, correctedHeading]);
+
+  const deltaAlt = useMemo(() => {
+    if (!selectedTarget || orientation.deviceAltitude === null) return null;
+    return selectedTarget.altitude - orientation.deviceAltitude;
+  }, [selectedTarget, orientation.deviceAltitude]);
+
+  const azLock = deltaAz !== null && Math.abs(deltaAz) <= 1.5;
+  const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
+  const targetLock = azLock && altLock;
+
   useEffect(() => {
     if (!navigator.geolocation) {
-      setGpsError("Geolocalizzazione non disponibile");
+      setGps((prev) => ({
+        ...prev,
+        error: "GPS non disponibile su questo browser.",
+      }));
       return;
     }
 
-    gpsWatchIdRef.current = navigator.geolocation.watchPosition(
+    const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        setLatitude(pos.coords.latitude);
-        setLongitude(pos.coords.longitude);
-        setGpsAccuracy(pos.coords.accuracy);
-        setGpsError("");
+        setGps({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          error: null,
+        });
       },
       (err) => {
-        let errMsg = "Errore GPS";
-        if (err.code === 1) errMsg = "GPS negato";
-        if (err.code === 2) errMsg = "Posizione non disponibile";
-        if (err.code === 3) errMsg = "Timeout GPS";
-        setGpsError(errMsg);
+        setGps((prev) => ({
+          ...prev,
+          error: `GPS: ${err.message}`,
+        }));
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      {
+        enableHighAccuracy: true,
+        maximumAge: 2000,
+        timeout: 15000,
+      }
     );
 
-    return () => {
-      if (gpsWatchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(gpsWatchIdRef.current);
-      }
-    };
+    return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // Calcola corpi celesti ogni 5 secondi
   useEffect(() => {
-    const calculateBodies = () => {
-      if (!latitude || !longitude) return;
+    if (gps.lat === null || gps.lon === null) return;
 
+    const calculate = () => {
       const now = new Date();
-      const observer = new Observer(latitude, longitude, 0);
+      const observer = new Observer(gps.lat!, gps.lon!, 0);
 
-      const bodyList = [
-        { name: "Sole", type: Body.Sun },
-        { name: "Luna", type: Body.Moon },
-        { name: "Mercurio", type: Body.Mercury },
-        { name: "Venere", type: Body.Venus },
-        { name: "Marte", type: Body.Mars },
-        { name: "Giove", type: Body.Jupiter },
-        { name: "Saturno", type: Body.Saturn },
-      ];
-
-      const calculated = bodyList.map(({ name, type }) => {
-        const eq = Equator(type, now, observer, true, true);
+      const nextRows = SKY_BODIES.map(({ body, label }) => {
+        const eq = Equator(body, now, observer, true, true);
         const hor = Horizon(now, observer, eq.ra, eq.dec, "normal");
 
         return {
-          name,
-          bodyType: type,
+          id: label,
+          label,
           azimuth: hor.azimuth,
           altitude: hor.altitude,
+          visible: hor.altitude > 0,
         };
       });
 
-      setBodies(calculated);
+      setRows(nextRows);
     };
 
-    calculateBodies();
-    astronomyIntervalRef.current = setInterval(calculateBodies, 5000);
+    calculate();
+    const interval = window.setInterval(calculate, 5000);
 
-    return () => {
-      if (astronomyIntervalRef.current) {
-        clearInterval(astronomyIntervalRef.current);
-      }
-    };
-  }, [latitude, longitude]);
+    return () => window.clearInterval(interval);
+  }, [gps.lat, gps.lon]);
 
-  // Listener per DeviceOrientationEvent con smoothing e pitch/roll
-  useEffect(() => {
-    if (!compassActive) return;
+  async function enableCompass() {
+    setOrientation((prev) => ({ ...prev, error: null }));
 
-    const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
-      const evt = event as DeviceOrientationEventWithWebkit;
-      let rawHeading: number | undefined;
-      // Preferisci webkitCompassHeading (iOS Safari)
-      if (evt.webkitCompassHeading !== undefined) {
-        rawHeading = evt.webkitCompassHeading;
-      } else if (evt.alpha !== undefined) {
-        rawHeading = evt.alpha;
-      }
-      // Pitch: inclinazione avanti/indietro (beta)
-      // Roll: inclinazione laterale (gamma)
-      const rawPitch = evt.beta !== undefined ? evt.beta : 0;
-      const rawRoll = evt.gamma !== undefined ? evt.gamma : 0;
-
-      if (typeof rawHeading === "number") {
-        // Aggiorna buffer
-        headingSamples.current.push({ heading: rawHeading, pitch: rawPitch, roll: rawRoll });
-        if (headingSamples.current.length > 10) headingSamples.current.shift();
-        // Calcola media mobile
-        const avg = headingSamples.current.reduce(
-          (acc, s) => {
-            acc.heading += s.heading;
-            acc.pitch += s.pitch;
-            acc.roll += s.roll;
-            return acc;
-          },
-          { heading: 0, pitch: 0, roll: 0 }
-        );
-        const n = headingSamples.current.length;
-        setHeading(avg.heading / n);
-        setPitch(avg.pitch / n);
-        setRoll(avg.roll / n);
-      }
+    const DeviceOrientation = DeviceOrientationEvent as unknown as {
+      requestPermission?: () => Promise<"granted" | "denied">;
     };
 
-    window.addEventListener("deviceorientation", handleDeviceOrientation);
-    return () => {
-      window.removeEventListener("deviceorientation", handleDeviceOrientation);
-      headingSamples.current = [];
-    };
-  }, [compassActive]);
-
-  // Attiva bussola (con permesso su iOS/Safari)
-  const activateCompass = async () => {
-    const win = window as WindowWithPermission;
-
-    // Se su iOS/Safari e requestPermission disponibile
-    if (
-      win.DeviceOrientationEvent &&
-      win.DeviceOrientationEvent.requestPermission
-    ) {
-      try {
-        const permission = await win.DeviceOrientationEvent.requestPermission();
-        if (permission === "granted") {
-          setCompassActive(true);
-          deviceOrientationRef.current = true;
-          setCompassError("");
-        } else {
-          setCompassError("Permesso orientamento negato");
+    try {
+      if (typeof DeviceOrientation.requestPermission === "function") {
+        const permission = await DeviceOrientation.requestPermission();
+        if (permission !== "granted") {
+          setOrientation((prev) => ({
+            ...prev,
+            enabled: false,
+            error: "Permesso orientamento negato.",
+          }));
+          return;
         }
-      } catch (err) {
-        setCompassError("Errore richiesta permesso orientamento");
       }
-    } else {
-      // Per browser non iOS che supportano deviceorientation
-      setCompassActive(true);
-      deviceOrientationRef.current = true;
-      setCompassError("");
-    }
-  };
 
-  // Calibra sulla Luna
-  const calibrateOnMoon = () => {
-    if (typeof heading !== "number" || isNaN(heading)) {
-      setCompassError("Heading non disponibile");
+      window.addEventListener("deviceorientation", handleOrientation, true);
+
+      setOrientation((prev) => ({
+        ...prev,
+        enabled: true,
+        error: null,
+      }));
+    } catch (error) {
+      setOrientation((prev) => ({
+        ...prev,
+        enabled: false,
+        error: error instanceof Error ? error.message : "Errore attivazione bussola.",
+      }));
+    }
+  }
+
+  function handleOrientation(event: DeviceOrientationEvent) {
+    const compassEvent = event as DeviceOrientationEvent & {
+      webkitCompassHeading?: number;
+    };
+
+    let rawHeading: number | null = null;
+
+    if (
+      typeof compassEvent.webkitCompassHeading === "number" &&
+      Number.isFinite(compassEvent.webkitCompassHeading)
+    ) {
+      rawHeading = normalize360(compassEvent.webkitCompassHeading);
+    } else if (typeof event.alpha === "number" && Number.isFinite(event.alpha)) {
+      rawHeading = normalize360(360 - event.alpha);
+    }
+
+    const beta = typeof event.beta === "number" && Number.isFinite(event.beta) ? event.beta : null;
+    const gamma = typeof event.gamma === "number" && Number.isFinite(event.gamma) ? event.gamma : null;
+    const deviceAltitude = estimateDeviceAltitude(beta);
+
+    if (rawHeading !== null) {
+      headingSamplesRef.current = [...headingSamplesRef.current, rawHeading].slice(-10);
+    }
+
+    const smoothHeading = circularMeanDeg(headingSamplesRef.current);
+
+    setOrientation((prev) => ({
+      ...prev,
+      rawHeading,
+      smoothHeading,
+      beta,
+      gamma,
+      deviceAltitude,
+      error: null,
+    }));
+  }
+
+  function calibrateOnMoon() {
+    const moon = rows.find((row) => row.id === "Luna");
+    if (!moon || orientation.smoothHeading === null) return;
+
+    const nextOffset = normalize180(moon.azimuth - orientation.smoothHeading);
+    setOffsetDeg(nextOffset);
+    localStorage.setItem(OFFSET_KEY, String(nextOffset));
+  }
+
+  function resetCalibration() {
+    setOffsetDeg(0);
+    localStorage.removeItem(OFFSET_KEY);
+  }
+
+  async function startCamera() {
+    setCameraError(null);
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera non disponibile. Serve HTTPS o localhost.");
       return;
     }
 
-    const moonData = bodies.find((b) => b.name === "Luna");
-    if (!moonData) {
-      setCompassError("Luna non trovata");
-      return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+        },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+      setCameraActive(true);
+
+      window.setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          void videoRef.current.play();
+        }
+      }, 0);
+    } catch (error) {
+      setCameraError(error instanceof Error ? error.message : "Permesso camera negato.");
+    }
+  }
+
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
 
-    const calculatedOffset = moonData.azimuth - heading;
-    const normalizedOffset = normalizeAngle(calculatedOffset);
+    setCameraActive(false);
+  }
 
-    setOffset(normalizedOffset);
-    localStorage.setItem(
-      "astroPons.compassOffsetDeg",
-      normalizedOffset.toString()
-    );
-  };
-
-  // Reset calibrazione
-  const resetCalibration = () => {
-    setOffset(0);
-    localStorage.removeItem("astroPons.compassOffsetDeg");
-  };
-
-  // Calcola heading corretto applicando offset
-  const correctedHeading = heading + offset;
-
-  // Calcola delta azimut e delta elevazione (pitch)
-  const selectedBodyData = bodies.find((b) => b.name === selectedBody);
-  // delta azimut
-  const deltaAz = selectedBodyData
-    ? normalizeAngle(selectedBodyData.azimuth - correctedHeading)
-    : 0;
-  // delta elevazione
-  const deltaEl = selectedBodyData
-    ? selectedBodyData.altitude - pitch
-    : 0;
-
-  // Precision Mode: indicazione telescopio
-  const getTelescopeIndicator = () => {
-    if (!selectedBodyData) return "";
-    const lock = Math.abs(deltaAz) < 1 && Math.abs(deltaEl) < 1;
-    if (lock) return "🎯 LOCK";
-    let arrow = "";
-    if (Math.abs(deltaAz) >= 1) arrow += deltaAz > 0 ? "← " : "→ ";
-    if (Math.abs(deltaEl) >= 1) arrow += deltaEl > 0 ? "⬆" : "⬇";
-    return arrow.trim();
-  };
-
-  // Status complessivo
   useEffect(() => {
-    const parts: string[] = [];
-    if (latitude && longitude) {
-      parts.push(
-        `Lat ${latitude.toFixed(4)} / Lon ${longitude.toFixed(4)}`
-      );
-      if (gpsAccuracy) parts.push(`(±${gpsAccuracy.toFixed(0)}m)`);
-    }
-    if (gpsError) parts.push(`GPS: ${gpsError}`);
-    parts.push(`Heading: ${heading.toFixed(1)}°`);
-    parts.push(`Pitch: ${pitch.toFixed(1)}°`);
-    parts.push(`Tilt: ${roll.toFixed(1)}°`);
-    if (compassError) parts.push(`Bussola: ${compassError}`);
-    setStatus(parts.join(" | "));
-  }, [latitude, longitude, gpsAccuracy, gpsError, heading, pitch, roll, compassError]);
+    return () => {
+      window.removeEventListener("deviceorientation", handleOrientation, true);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   return (
-    <div
-      style={{
-        backgroundColor: "#0a0e27",
-        color: "#e0e0e0",
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-        padding: "16px",
-        minHeight: "100vh",
-        overflowX: "hidden",
-      }}
-    >
-      {/* Titolo */}
-      <h1 style={{ margin: "0 0 8px 0", fontSize: "28px", color: "#ffd700" }}>
-        Moon Compass
-      </h1>
-      <p style={{ margin: "0 0 16px 0", fontSize: "12px", color: "#999" }}>
-        V2.1 - Astronomical Compass
-      </p>
+    <main style={styles.page}>
+      <section style={styles.header}>
+        <h1 style={styles.title}>Moon Compass</h1>
+        <p style={styles.subtitle}>V3 — Precision Telescope + AR-ready</p>
+      </section>
 
-      {/* Status */}
-      <div
-        style={{
-          backgroundColor: "#1a1f3a",
-          padding: "12px",
-          borderRadius: "8px",
-          marginBottom: "16px",
-          fontSize: "12px",
-          lineHeight: "1.4",
-        }}
-      >
-        {status}
-      </div>
+      <section style={styles.statusCard}>
+        <strong>
+          Lat {gps.lat?.toFixed(4) ?? "—"} / Lon {gps.lon?.toFixed(4) ?? "—"}
+        </strong>
+        <span>
+          {" | "}
+          GPS {gps.accuracy !== null ? `±${gps.accuracy.toFixed(0)}m` : "—"}
+          {" | "}
+          Heading {formatDeg(orientation.smoothHeading)}
+        </span>
+        {gps.error && <p style={styles.error}>{gps.error}</p>}
+      </section>
 
-      {/* Controlli Bussola */}
-      {!compassActive && (
-        <button
-          onClick={activateCompass}
-          style={{
-            width: "100%",
-            padding: "12px",
-            marginBottom: "16px",
-            backgroundColor: "#00a8e8",
-            color: "#fff",
-            border: "none",
-            borderRadius: "8px",
-            fontSize: "16px",
-            fontWeight: "bold",
-            cursor: "pointer",
-          }}
-        >
-          Attiva Bussola
-        </button>
-      )}
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>Bussola + Calibrazione</h2>
 
-      {/* Sezione Calibrazione (visibile solo se bussola attiva) */}
-      {compassActive && (
-        <div
-          style={{
-            backgroundColor: "#1a1f3a",
-            padding: "12px",
-            borderRadius: "8px",
-            marginBottom: "16px",
-          }}
-        >
-          <div style={{ marginBottom: "8px", fontSize: "13px" }}>
-            <strong>Heading:</strong> {heading.toFixed(1)}°
-          </div>
-          <div style={{ marginBottom: "8px", fontSize: "13px" }}>
-            <strong>Offset Calibrazione:</strong> {offset.toFixed(1)}°
-          </div>
-          {selectedBodyData && (
-            <>
-              <div style={{ marginBottom: "8px", fontSize: "13px" }}>
-                <strong>Azimut {selectedBody}:</strong>{" "}
-                {selectedBodyData.azimuth.toFixed(1)}°
-              </div>
-              <div style={{ marginBottom: "12px", fontSize: "13px" }}>
-                <strong>Heading Corretto:</strong> {correctedHeading?.toFixed(1)}°
-              </div>
-            </>
-          )}
-
-          <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
-            <button
-              onClick={calibrateOnMoon}
-              style={{
-                flex: 1,
-                padding: "10px",
-                backgroundColor: "#ffd700",
-                color: "#000",
-                border: "none",
-                borderRadius: "6px",
-                fontSize: "14px",
-                fontWeight: "bold",
-                cursor: "pointer",
-              }}
-            >
-              Calibra su Luna
-            </button>
-            <button
-              onClick={resetCalibration}
-              style={{
-                flex: 1,
-                padding: "10px",
-                backgroundColor: "#666",
-                color: "#fff",
-                border: "none",
-                borderRadius: "6px",
-                fontSize: "14px",
-                cursor: "pointer",
-              }}
-            >
-              Reset
-            </button>
-          </div>
+        <div style={styles.grid2}>
+          <Info label="Heading raw" value={formatDeg(orientation.rawHeading)} />
+          <Info label="Heading smooth" value={formatDeg(orientation.smoothHeading)} />
+          <Info label="Offset calibrazione" value={formatDeg(offsetDeg)} />
+          <Info label="Heading corretto" value={formatDeg(correctedHeading)} />
+          <Info label="Pitch stimato" value={formatDeg(orientation.deviceAltitude)} />
+          <Info label="Beta/Gamma" value={`${formatDeg(orientation.beta)} / ${formatDeg(orientation.gamma)}`} />
         </div>
-      )}
 
-      {/* Target Selezionato e Indicazione Telescopio */}
-      {compassActive && selectedBodyData && (
-        <div
-          style={{
-            backgroundColor: "#1a1f3a",
-            padding: "16px",
-            borderRadius: "8px",
-            marginBottom: "16px",
-            textAlign: "center",
-          }}
-        >
-          <div style={{ marginBottom: "12px" }}>
-            <strong style={{ fontSize: "16px" }}>Target: {selectedBody}</strong>
-          </div>
-          <div
-            style={{
-              fontSize: "32px",
-              fontWeight: "bold",
-              color:
-                Math.abs(deltaAz) < 1 && Math.abs(deltaEl) < 1
-                  ? "#00ff00"
-                  : "#ffd700",
-              marginBottom: "8px",
-              letterSpacing: "2px",
-            }}
+        {orientation.error && <p style={styles.error}>{orientation.error}</p>}
+
+        <div style={styles.buttonRow}>
+          <button style={styles.primaryButton} onClick={enableCompass}>
+            Attiva bussola
+          </button>
+          <button
+            style={styles.yellowButton}
+            onClick={calibrateOnMoon}
+            disabled={!rows.find((row) => row.id === "Luna") || orientation.smoothHeading === null}
           >
-            {getTelescopeIndicator()}
-          </div>
-          {selectedBodyData && (
-            <div style={{ fontSize: "12px", color: "#999" }}>
-              ΔAz: {deltaAz.toFixed(1)}° | ΔEl: {deltaEl.toFixed(1)}°
-            </div>
-          )}
+            Calibra su Luna
+          </button>
+          <button style={styles.secondaryButton} onClick={resetCalibration}>
+            Reset
+          </button>
         </div>
-      )}
+      </section>
 
-      {/* Selezione Target */}
-      <div style={{ marginBottom: "16px" }}>
-        <label style={{ display: "block", marginBottom: "8px", fontSize: "13px" }}>
-          <strong>Seleziona Target:</strong>
-        </label>
+      <section style={targetLock ? styles.lockCard : styles.card}>
+        <h2 style={styles.sectionTitle}>Precision Telescope</h2>
+
+        <div style={styles.targetName}>
+          Target: <strong>{selectedTarget?.label ?? "—"}</strong>
+        </div>
+
+        {targetLock ? (
+          <div style={styles.lockText}>✓ TARGET LOCK</div>
+        ) : (
+          <div style={styles.precisionGrid}>
+            <div style={styles.directionBox}>
+              <div style={azLock ? styles.okText : styles.bigYellow}>{directionText(deltaAz)}</div>
+              <div style={styles.metric}>Delta Az: {formatDeg(deltaAz)}</div>
+            </div>
+
+            <div style={styles.directionBox}>
+              <div style={altLock ? styles.okText : styles.bigYellow}>{altitudeText(deltaAlt)}</div>
+              <div style={styles.metric}>Delta Alt: {formatDeg(deltaAlt)}</div>
+            </div>
+          </div>
+        )}
+
+        <div style={styles.lockGrid}>
+          <span style={azLock ? styles.greenBadge : styles.redBadge}>Azimut {azLock ? "OK" : "NO"}</span>
+          <span style={altLock ? styles.greenBadge : styles.redBadge}>Altezza {altLock ? "OK" : "NO"}</span>
+        </div>
+      </section>
+
+      <section style={styles.card}>
+        <label style={styles.label}>Seleziona target</label>
         <select
-          value={selectedBody}
-          onChange={(e) => setSelectedBody(e.target.value)}
-          style={{
-            width: "100%",
-            padding: "10px",
-            backgroundColor: "#1a1f3a",
-            color: "#e0e0e0",
-            border: "1px solid #00a8e8",
-            borderRadius: "6px",
-            fontSize: "14px",
-          }}
+          style={styles.select}
+          value={selectedId}
+          onChange={(event) => setSelectedId(event.target.value)}
         >
-          {bodies.map((b) => (
-            <option key={b.name} value={b.name}>
-              {b.name}
+          {rows.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.label}
             </option>
           ))}
         </select>
-      </div>
+      </section>
 
-      {/* Tabella Corpi Celesti */}
-      <div
-        style={{
-          overflowX: "auto",
-          borderRadius: "8px",
-          overflow: "hidden",
-        }}
-      >
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "13px",
-          }}
-        >
-          <thead>
-            <tr style={{ backgroundColor: "#1a1f3a" }}>
-              <th
-                style={{
-                  textAlign: "left",
-                  padding: "10px",
-                  borderBottom: "1px solid #333",
-                }}
-              >
-                Corpo
-              </th>
-              <th
-                style={{
-                  textAlign: "right",
-                  padding: "10px",
-                  borderBottom: "1px solid #333",
-                }}
-              >
-                Azimut
-              </th>
-              <th
-                style={{
-                  textAlign: "right",
-                  padding: "10px",
-                  borderBottom: "1px solid #333",
-                }}
-              >
-                Altezza
-              </th>
-              <th
-                style={{
-                  textAlign: "center",
-                  padding: "10px",
-                  borderBottom: "1px solid #333",
-                  fontSize: "12px",
-                }}
-              >
-                Stato
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {bodies.map((body) => (
-              <tr
-                key={body.name}
-                style={{
-                  backgroundColor: body.name === selectedBody ? "#2a3050" : "transparent",
-                  borderBottom: "1px solid #222",
-                }}
-              >
-                <td style={{ padding: "10px" }}>{body.name}</td>
-                <td style={{ textAlign: "right", padding: "10px" }}>
-                  {body.azimuth.toFixed(1)}°
-                </td>
-                <td style={{ textAlign: "right", padding: "10px" }}>
-                  {body.altitude.toFixed(1)}°
-                </td>
-                <td
-                  style={{
-                    textAlign: "center",
-                    padding: "10px",
-                    color:
-                      body.altitude > 0 ? "#00ff00" : "#ff6b6b",
-                  }}
-                >
-                  {body.altitude > 0 ? "Visibile" : "Sotto"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <section style={styles.tableCard}>
+        <div style={styles.tableHeader}>
+          <span>Corpo</span>
+          <span>Azimut</span>
+          <span>Altezza</span>
+          <span>Stato</span>
+        </div>
 
-      {/* Footer */}
-      <div
-        style={{
-          marginTop: "24px",
-          padding: "12px",
-          fontSize: "11px",
-          color: "#666",
-          textAlign: "center",
-          borderTop: "1px solid #333",
-        }}
-      >
-        Usa GPS reale + bussola iPhone per puntare i corpi celesti
-      </div>
+        {rows.map((row) => (
+          <button
+            key={row.id}
+            style={{
+              ...styles.tableRow,
+              ...(row.id === selectedId ? styles.selectedRow : {}),
+            }}
+            onClick={() => setSelectedId(row.id)}
+          >
+            <span>{row.label}</span>
+            <span>{row.azimuth.toFixed(1)}°</span>
+            <span>{row.altitude.toFixed(1)}°</span>
+            <span style={row.visible ? styles.visible : styles.hidden}>
+              {row.visible ? "Visibile" : "Sotto"}
+            </span>
+          </button>
+        ))}
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>AR Camera — prossimo modulo</h2>
+        <p style={styles.smallText}>
+          Test base camera posteriore. Serve HTTPS o localhost. Su Vercel è ok.
+        </p>
+
+        <div style={styles.buttonRow}>
+          <button style={styles.primaryButton} onClick={startCamera}>
+            Test Camera
+          </button>
+          <button style={styles.secondaryButton} onClick={stopCamera}>
+            Stop Camera
+          </button>
+        </div>
+
+        {cameraError && <p style={styles.error}>{cameraError}</p>}
+
+        <div style={styles.videoWrap}>
+          {cameraActive ? (
+            <video ref={videoRef} playsInline muted style={styles.video} />
+          ) : (
+            <div style={styles.videoPlaceholder}>Camera non attiva</div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function Info({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={styles.infoBox}>
+      <div style={styles.infoLabel}>{label}</div>
+      <div style={styles.infoValue}>{value}</div>
     </div>
   );
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  page: {
+    minHeight: "100vh",
+    background: "#05081f",
+    color: "#f3f5ff",
+    padding: "28px 16px 48px",
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+  },
+  header: {
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  title: {
+    color: "#ffd400",
+    fontSize: 42,
+    lineHeight: 1,
+    margin: "0 0 10px",
+    fontWeight: 900,
+  },
+  subtitle: {
+    color: "#a9adbd",
+    fontSize: 18,
+    margin: 0,
+    fontWeight: 700,
+  },
+  statusCard: {
+    background: "#1b203a",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 18,
+    textAlign: "center",
+    color: "#e6e8f2",
+    fontSize: 16,
+  },
+  card: {
+    background: "#1b203a",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+    boxShadow: "0 12px 32px rgba(0,0,0,0.2)",
+  },
+  lockCard: {
+    background: "#102b21",
+    border: "2px solid #15ff31",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+    boxShadow: "0 0 30px rgba(21,255,49,0.12)",
+  },
+  sectionTitle: {
+    margin: "0 0 16px",
+    fontSize: 22,
+    color: "#ffffff",
+    textAlign: "center",
+  },
+  grid2: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+  },
+  infoBox: {
+    background: "#11162c",
+    borderRadius: 12,
+    padding: 12,
+  },
+  infoLabel: {
+    color: "#9ca3b7",
+    fontSize: 12,
+    fontWeight: 700,
+    marginBottom: 4,
+  },
+  infoValue: {
+    color: "#ffffff",
+    fontSize: 17,
+    fontWeight: 800,
+  },
+  buttonRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 12,
+    marginTop: 16,
+  },
+  primaryButton: {
+    background: "#00b7ff",
+    color: "#00111a",
+    border: 0,
+    borderRadius: 12,
+    padding: "15px 18px",
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  yellowButton: {
+    background: "#ffd400",
+    color: "#090909",
+    border: 0,
+    borderRadius: 12,
+    padding: "15px 18px",
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  secondaryButton: {
+    background: "#707070",
+    color: "#ffffff",
+    border: 0,
+    borderRadius: 12,
+    padding: "15px 18px",
+    fontSize: 18,
+    fontWeight: 900,
+  },
+  targetName: {
+    textAlign: "center",
+    fontSize: 25,
+    marginBottom: 14,
+    color: "#ffffff",
+  },
+  lockText: {
+    color: "#15ff31",
+    textAlign: "center",
+    fontSize: 42,
+    fontWeight: 1000,
+    margin: "18px 0",
+  },
+  precisionGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 14,
+  },
+  directionBox: {
+    background: "#11162c",
+    borderRadius: 14,
+    padding: 16,
+    textAlign: "center",
+  },
+  bigYellow: {
+    color: "#ffd400",
+    fontSize: 30,
+    fontWeight: 1000,
+    lineHeight: 1.1,
+  },
+  okText: {
+    color: "#15ff31",
+    fontSize: 28,
+    fontWeight: 1000,
+    lineHeight: 1.1,
+  },
+  metric: {
+    color: "#a9adbd",
+    fontSize: 17,
+    fontWeight: 800,
+    marginTop: 8,
+  },
+  lockGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+    marginTop: 16,
+  },
+  greenBadge: {
+    background: "rgba(21,255,49,0.12)",
+    color: "#15ff31",
+    padding: 10,
+    borderRadius: 10,
+    textAlign: "center",
+    fontWeight: 900,
+  },
+  redBadge: {
+    background: "rgba(255,92,92,0.12)",
+    color: "#ff6666",
+    padding: 10,
+    borderRadius: 10,
+    textAlign: "center",
+    fontWeight: 900,
+  },
+  label: {
+    display: "block",
+    fontSize: 18,
+    fontWeight: 900,
+    marginBottom: 10,
+  },
+  select: {
+    width: "100%",
+    background: "#1b203a",
+    color: "#ffffff",
+    border: "2px solid #00b7ff",
+    borderRadius: 12,
+    padding: 15,
+    fontSize: 18,
+    fontWeight: 800,
+  },
+  tableCard: {
+    background: "#11162c",
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 18,
+  },
+  tableHeader: {
+    display: "grid",
+    gridTemplateColumns: "1.2fr 1fr 1fr 1fr",
+    gap: 8,
+    padding: "14px 12px",
+    background: "#1b203a",
+    color: "#ffffff",
+    fontWeight: 900,
+    fontSize: 15,
+  },
+  tableRow: {
+    display: "grid",
+    gridTemplateColumns: "1.2fr 1fr 1fr 1fr",
+    gap: 8,
+    width: "100%",
+    padding: "16px 12px",
+    background: "transparent",
+    border: 0,
+    borderTop: "1px solid rgba(255,255,255,0.08)",
+    color: "#e8eaf5",
+    fontSize: 16,
+    fontWeight: 800,
+    textAlign: "left",
+  },
+  selectedRow: {
+    background: "#303755",
+  },
+  visible: {
+    color: "#15ff31",
+  },
+  hidden: {
+    color: "#ff6666",
+  },
+  smallText: {
+    color: "#a9adbd",
+    fontSize: 15,
+    lineHeight: 1.4,
+  },
+  videoWrap: {
+    marginTop: 16,
+    background: "#05081f",
+    borderRadius: 16,
+    overflow: "hidden",
+    border: "1px solid rgba(255,255,255,0.1)",
+    minHeight: 220,
+  },
+  video: {
+    width: "100%",
+    display: "block",
+    minHeight: 220,
+    objectFit: "cover",
+  },
+  videoPlaceholder: {
+    minHeight: 220,
+    display: "grid",
+    placeItems: "center",
+    color: "#8d93aa",
+    fontWeight: 800,
+  },
+  error: {
+    color: "#ff6666",
+    fontWeight: 800,
+    marginTop: 12,
+  },
+};
