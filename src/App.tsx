@@ -198,9 +198,6 @@ function radarPointFromAzAlt(
   }
 
   const safeAltitude = clamp(altitude, 0, 90);
-
-  // Bordo esterno = orizzonte / basso.
-  // Centro = alto sopra la testa.
   const radius = 43 * (1 - safeAltitude / 90);
   const rad = (normalize360(azimuth) * Math.PI) / 180;
 
@@ -678,11 +675,19 @@ export default function App() {
     return selectedTarget.altitude - orientation.deviceAltitude;
   }, [selectedTarget, orientation.deviceAltitude, isGuidanceDisabled]);
 
-  const azLock =
-    !isGuidanceDisabled && deltaAz !== null && Math.abs(deltaAz) <= 1.5;
-  const altLock =
-    !isGuidanceDisabled && deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
-  const targetLock = !isGuidanceDisabled && azLock && altLock;
+  const telescopeAzLock =
+    aimMode === "telescope" &&
+    !isGuidanceDisabled &&
+    deltaAz !== null &&
+    Math.abs(deltaAz) <= 1.5;
+
+  const telescopeAltLock =
+    aimMode === "telescope" &&
+    !isGuidanceDisabled &&
+    deltaAlt !== null &&
+    Math.abs(deltaAlt) <= 2.0;
+
+  const telescopeTargetLock = telescopeAzLock && telescopeAltLock;
 
   const canCalibrateOnSelectedTarget =
     selectedTarget !== null &&
@@ -984,7 +989,7 @@ export default function App() {
     if (isGuidanceDisabled) {
       setCameraError(
         guidanceDisabledReason ??
-          "AR Camera disattivata: target non osservabile ora."
+          "Camera disattivata: target non osservabile ora."
       );
       return;
     }
@@ -1014,7 +1019,7 @@ export default function App() {
     } catch (error) {
       if (isStandalone) {
         setCameraError(
-          "Su iPhone in modalità App la camera può essere limitata. Apri Astro Pons in Safari per AR completo."
+          "Su iPhone in modalità App la camera può essere limitata. Apri Astro Pons in Safari per preview camera completa."
         );
       } else {
         setCameraError(
@@ -1045,7 +1050,7 @@ export default function App() {
   function aimModeTitle(mode: AimMode): string {
     if (mode === "telescope") return "Telescopio Push-To";
     if (mode === "skyfinder") return "Sky Finder";
-    return "Camera AR sperimentale";
+    return "Camera AR Safe Mode";
   }
 
   function aimModeDescription(mode: AimMode): string {
@@ -1057,14 +1062,14 @@ export default function App() {
       return "Per occhio nudo: l’app ti dice in quale direzione guardare e a che altezza cercare il target. Non richiede camera né fissaggio al telescopio.";
     }
 
-    return "Modalità sperimentale: usa la camera posteriore come anteprima visiva. L’asse ottico della camera non è ancora calibrato separatamente.";
+    return "Preview sperimentale con camera posteriore. Non dichiara più TARGET LOCK perché l’asse ottico della fotocamera non è ancora calibrato separatamente.";
   }
 
   return (
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6 — Sky Finder Radar</p>
+        <p style={styles.subtitle}>V6.1 — Camera AR Safe Mode</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1249,6 +1254,46 @@ export default function App() {
             </div>
           )}
         </section>
+      ) : aimMode === "camera" && !isGuidanceDisabled ? (
+        <section style={styles.cameraSafeCard}>
+          <h2 style={styles.sectionTitle}>Camera AR Safe Mode</h2>
+
+          <div style={styles.targetName}>
+            Target: <strong>{selectedTarget?.label ?? "—"}</strong>
+          </div>
+
+          <div style={styles.noticeBox}>
+            Preview camera attiva. Il marker è solo indicativo: non rappresenta
+            ancora una calibrazione reale dell’asse ottico della fotocamera.
+          </div>
+
+          <div style={styles.cameraSafeGrid}>
+            <div style={styles.cameraSafeMetric}>
+              <span>Azimut target</span>
+              <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
+            </div>
+
+            <div style={styles.cameraSafeMetric}>
+              <span>Altezza target</span>
+              <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
+            </div>
+
+            <div style={styles.cameraSafeMetric}>
+              <span>Delta Az indicativo</span>
+              <strong>{formatDeg(deltaAz)}</strong>
+            </div>
+
+            <div style={styles.cameraSafeMetric}>
+              <span>Delta Alt indicativo</span>
+              <strong>{formatDeg(deltaAlt)}</strong>
+            </div>
+          </div>
+
+          <div style={styles.cameraSafeWarning}>
+            Per puntamento affidabile usa <strong>Telescopio Push-To</strong>.
+            La vera Camera AR arriverà con calibrazione camera separata.
+          </div>
+        </section>
       ) : isGuidanceDisabled ? (
         <section
           style={isSolarTarget ? styles.solarSafeCard : styles.disabledGuideCard}
@@ -1294,45 +1339,32 @@ export default function App() {
           )}
         </section>
       ) : (
-        <section style={targetLock ? styles.lockCard : styles.card}>
-          <h2 style={styles.sectionTitle}>
-            {aimMode === "camera"
-              ? "Camera AR sperimentale"
-              : "Precision Telescope"}
-          </h2>
+        <section style={telescopeTargetLock ? styles.lockCard : styles.card}>
+          <h2 style={styles.sectionTitle}>Precision Telescope</h2>
 
           <div style={styles.targetName}>
             Target: <strong>{selectedTarget?.label ?? "—"}</strong>
           </div>
 
-          {aimMode === "telescope" && (
-            <div style={styles.noticeBox}>
-              Punta con il <strong>lato corto superiore dell’iPhone</strong>. Se
-              usi il telescopio, fissa l’iPhone parallelo al tubo e calibra nella
-              stessa posizione d’uso.
-            </div>
-          )}
+          <div style={styles.noticeBox}>
+            Punta con il <strong>lato corto superiore dell’iPhone</strong>. Se
+            usi il telescopio, fissa l’iPhone parallelo al tubo e calibra nella
+            stessa posizione d’uso.
+          </div>
 
-          {aimMode === "camera" && (
-            <div style={styles.noticeBox}>
-              AR sperimentale: la camera è una preview. L’asse ottico della
-              fotocamera non è ancora calibrato separatamente.
-            </div>
-          )}
-
-          {targetLock ? (
+          {telescopeTargetLock ? (
             <div style={styles.lockText}>✓ TARGET LOCK</div>
           ) : (
             <div style={styles.precisionGrid}>
               <div style={styles.directionBox}>
-                <div style={azLock ? styles.okText : styles.bigYellow}>
+                <div style={telescopeAzLock ? styles.okText : styles.bigYellow}>
                   {directionText(deltaAz)}
                 </div>
                 <div style={styles.metric}>Delta Az: {formatDeg(deltaAz)}</div>
               </div>
 
               <div style={styles.directionBox}>
-                <div style={altLock ? styles.okText : styles.bigYellow}>
+                <div style={telescopeAltLock ? styles.okText : styles.bigYellow}>
                   {altitudeText(deltaAlt)}
                 </div>
                 <div style={styles.metric}>Delta Alt: {formatDeg(deltaAlt)}</div>
@@ -1341,11 +1373,11 @@ export default function App() {
           )}
 
           <div style={styles.lockGrid}>
-            <span style={azLock ? styles.greenBadge : styles.redBadge}>
-              Azimut {azLock ? "OK" : "NO"}
+            <span style={telescopeAzLock ? styles.greenBadge : styles.redBadge}>
+              Azimut {telescopeAzLock ? "OK" : "NO"}
             </span>
-            <span style={altLock ? styles.greenBadge : styles.redBadge}>
-              Altezza {altLock ? "OK" : "NO"}
+            <span style={telescopeAltLock ? styles.greenBadge : styles.redBadge}>
+              Altezza {telescopeAltLock ? "OK" : "NO"}
             </span>
           </div>
         </section>
@@ -1442,7 +1474,7 @@ export default function App() {
             : styles.disabledArCard
         }
       >
-        <h2 style={styles.sectionTitle}>Camera AR</h2>
+        <h2 style={styles.sectionTitle}>Camera AR Preview</h2>
 
         {aimMode !== "camera" ? (
           <>
@@ -1451,8 +1483,7 @@ export default function App() {
               <strong>{aimModeTitle(aimMode)}</strong>.
             </p>
             <div style={styles.noticeBox}>
-              Passa a <strong>Camera AR sperimentale</strong> per usare la
-              preview video.
+              Passa a <strong>Camera AR</strong> per usare la preview video.
             </div>
           </>
         ) : isGuidanceDisabled ? (
@@ -1467,14 +1498,14 @@ export default function App() {
         ) : (
           <>
             <p style={styles.smallText}>
-              Camera posteriore + overlay sperimentale. Per il puntamento
-              affidabile resta preferibile la modalità Telescopio Push-To.
+              Camera posteriore + overlay indicativo. Nessun TARGET LOCK viene
+              dichiarato in questa modalità.
             </p>
 
             {isStandalone && (
               <div style={styles.noticeBox}>
                 Modalità App iPhone rilevata. Se la camera non parte, apri Astro
-                Pons in Safari per AR completo.
+                Pons in Safari per preview camera completa.
               </div>
             )}
 
@@ -1519,24 +1550,18 @@ export default function App() {
                 )}
 
                 <div style={styles.arInstruction}>
-                  {targetLock ? (
-                    <span style={styles.arLockText}>✓ TARGET IN CAMERA</span>
-                  ) : (
-                    <>
-                      <span>{directionText(deltaAz)}</span>
-                      <span>{altitudeText(deltaAlt)}</span>
-                    </>
-                  )}
+                  <span style={styles.arPreviewText}>Preview indicativa</span>
+                  <span>Asse camera non calibrato</span>
                 </div>
               </div>
             </div>
 
             <div style={styles.arInfoGrid}>
               <div style={styles.arMiniMetric}>
-                Delta Az {formatDeg(deltaAz)}
+                Delta Az indicativo {formatDeg(deltaAz)}
               </div>
               <div style={styles.arMiniMetric}>
-                Delta Alt {formatDeg(deltaAlt)}
+                Delta Alt indicativo {formatDeg(deltaAlt)}
               </div>
               <div style={styles.arMiniMetric}>
                 Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
@@ -1685,6 +1710,39 @@ const styles: Record<string, CSSProperties> = {
     padding: 18,
     marginBottom: 18,
     boxShadow: "0 0 30px rgba(21,255,49,0.12)",
+  },
+  cameraSafeCard: {
+    background: "#10202d",
+    border: "2px solid rgba(0,183,255,0.55)",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+    boxShadow: "0 0 28px rgba(0,183,255,0.1)",
+  },
+  cameraSafeGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+    marginTop: 14,
+  },
+  cameraSafeMetric: {
+    background: "#11162c",
+    borderRadius: 12,
+    padding: 12,
+    display: "grid",
+    gap: 4,
+    textAlign: "center",
+  },
+  cameraSafeWarning: {
+    background: "rgba(255,212,0,0.12)",
+    color: "#ffd400",
+    border: "1px solid rgba(255,212,0,0.35)",
+    borderRadius: 12,
+    padding: 12,
+    fontWeight: 900,
+    marginTop: 14,
+    lineHeight: 1.4,
+    textAlign: "center",
   },
   modeGrid: {
     display: "grid",
@@ -2318,8 +2376,8 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 1000,
     textAlign: "center",
   },
-  arLockText: {
-    color: "#15ff31",
+  arPreviewText: {
+    color: "#ffd400",
     fontSize: 24,
     fontWeight: 1000,
   },
