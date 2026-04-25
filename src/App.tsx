@@ -7,6 +7,8 @@ type SkyBody = {
   label: string;
 };
 
+type AimMode = "telescope" | "skyfinder" | "camera";
+
 type StatusKind = "good" | "medium" | "bad" | "solar";
 
 type Observability = {
@@ -132,6 +134,42 @@ function altitudeText(deltaAlt: number | null): string {
   if (deltaAlt === null) return "Altezza non disponibile";
   if (Math.abs(deltaAlt) <= 2.0) return "Altezza centrata";
   return deltaAlt > 0 ? "Alza ↑" : "Abbassa ↓";
+}
+
+function azimuthToCompass(azimuth: number | null): string {
+  if (azimuth === null || !Number.isFinite(azimuth)) return "—";
+
+  const dirs = [
+    "Nord",
+    "Nord-Nord-Est",
+    "Nord-Est",
+    "Est-Nord-Est",
+    "Est",
+    "Est-Sud-Est",
+    "Sud-Est",
+    "Sud-Sud-Est",
+    "Sud",
+    "Sud-Sud-Ovest",
+    "Sud-Ovest",
+    "Ovest-Sud-Ovest",
+    "Ovest",
+    "Ovest-Nord-Ovest",
+    "Nord-Ovest",
+    "Nord-Nord-Ovest",
+  ];
+
+  const index = Math.round(normalize360(azimuth) / 22.5) % 16;
+  return dirs[index];
+}
+
+function altitudeBand(altitude: number | null): string {
+  if (altitude === null || !Number.isFinite(altitude)) return "—";
+  if (altitude < 0) return "sotto l’orizzonte";
+  if (altitude < 10) return "bassissima";
+  if (altitude < 25) return "bassa";
+  if (altitude < 45) return "media";
+  if (altitude < 65) return "alta";
+  return "molto alta";
 }
 
 function analyzeObservability(
@@ -420,7 +458,11 @@ function buildObservationPlan(
 
     const finalBestAnalysis =
       bestAnalysis ??
-      analyzeObservability(label, bestAltitude, rows.find((r) => r.id === "Sole")?.altitude ?? 90);
+      analyzeObservability(
+        label,
+        bestAltitude,
+        rows.find((r) => r.id === "Sole")?.altitude ?? 90
+      );
 
     const firstUsefulTime = formatTime(firstUsefulDate);
     const bestTime = formatTime(bestDate);
@@ -430,9 +472,13 @@ function buildObservationPlan(
     if (label === "Sole") {
       advice = finalBestAnalysis.observationReason;
     } else if (currentRow?.observableNow) {
-      advice = `${label} è osservabile ora. Momento migliore: ${bestTime ?? "—"}.`;
+      advice = `${label} è osservabile ora. Momento migliore: ${
+        bestTime ?? "—"
+      }.`;
     } else if (firstUsefulTime) {
-      advice = `${label} non è osservabile ora. Prima finestra utile: ${firstUsefulTime}. Momento migliore: ${bestTime ?? "—"}.`;
+      advice = `${label} non è osservabile ora. Prima finestra utile: ${firstUsefulTime}. Momento migliore: ${
+        bestTime ?? "—"
+      }.`;
     } else {
       advice = `Nessuna finestra utile nelle prossime ${FORECAST_HOURS} ore. ${currentAnalysis.observationReason}`;
     }
@@ -473,6 +519,7 @@ export default function App() {
 
   const [rows, setRows] = useState<BodyRow[]>([]);
   const [selectedId, setSelectedId] = useState("Luna");
+  const [aimMode, setAimMode] = useState<AimMode>("telescope");
 
   const [orientation, setOrientation] = useState<OrientationState>({
     enabled: false,
@@ -507,9 +554,22 @@ export default function App() {
     );
   }, [rows, selectedId]);
 
+  const selectedPlan = useMemo(() => {
+    return null as ObservationItem | null;
+  }, []);
+
   const isSolarTarget = selectedTarget?.id === "Sole";
   const isGuidanceDisabled =
     selectedTarget === null || isSolarTarget || !selectedTarget.guideAllowed;
+
+  const observationPlan = useMemo(() => {
+    if (gps.lat === null || gps.lon === null) return [];
+    return buildObservationPlan(gps.lat, gps.lon, rows);
+  }, [gps.lat, gps.lon, rows]);
+
+  const currentSelectedPlan = useMemo(() => {
+    return observationPlan.find((item) => item.id === selectedId) ?? null;
+  }, [observationPlan, selectedId]);
 
   const guidanceDisabledReason = useMemo(() => {
     if (!selectedTarget) return "Nessun target disponibile.";
@@ -556,19 +616,23 @@ export default function App() {
     selectedTarget !== null &&
     !isSolarTarget &&
     selectedTarget.calibrationAllowed &&
-    orientation.smoothHeading !== null;
+    orientation.smoothHeading !== null &&
+    aimMode === "telescope";
 
   const calibrationButtonLabel =
-    selectedTarget?.id === "Sole"
-      ? "Sole non calibrabile direttamente"
-      : selectedTarget && !selectedTarget.calibrationAllowed
-        ? `${selectedTarget.label} non calibrabile ora`
-        : selectedTarget
-          ? `Calibra su ${selectedTarget.label}`
-          : "Calibra target";
+    aimMode !== "telescope"
+      ? "Calibrazione solo in Telescopio"
+      : selectedTarget?.id === "Sole"
+        ? "Sole non calibrabile direttamente"
+        : selectedTarget && !selectedTarget.calibrationAllowed
+          ? `${selectedTarget.label} non calibrabile ora`
+          : selectedTarget
+            ? `Calibra su ${selectedTarget.label}`
+            : "Calibra target";
 
   const arMarker = useMemo(() => {
     if (isGuidanceDisabled) return null;
+    if (aimMode !== "camera") return null;
     if (deltaAz === null || deltaAlt === null) return null;
 
     const horizontalFovDeg = 60;
@@ -584,12 +648,7 @@ export default function App() {
       y: clamp(rawY, 6, 94),
       inside,
     };
-  }, [deltaAz, deltaAlt, isGuidanceDisabled]);
-
-  const observationPlan = useMemo(() => {
-    if (gps.lat === null || gps.lon === null) return [];
-    return buildObservationPlan(gps.lat, gps.lon, rows);
-  }, [gps.lat, gps.lon, rows]);
+  }, [deltaAz, deltaAlt, isGuidanceDisabled, aimMode]);
 
   useEffect(() => {
     const standalone =
@@ -671,7 +730,7 @@ export default function App() {
   }, [gps.lat, gps.lon]);
 
   useEffect(() => {
-    if (!isGuidanceDisabled) return;
+    if (aimMode === "camera" && !isGuidanceDisabled) return;
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -683,7 +742,7 @@ export default function App() {
     }
 
     setCameraActive(false);
-  }, [isGuidanceDisabled]);
+  }, [isGuidanceDisabled, aimMode]);
 
   useEffect(() => {
     return () => {
@@ -792,6 +851,13 @@ export default function App() {
   function calibrateOnSelectedTarget() {
     setCalibrationMessage(null);
 
+    if (aimMode !== "telescope") {
+      setCalibrationMessage(
+        "La calibrazione affidabile usa la modalità Telescopio Push-To: punta con il lato corto superiore dell’iPhone."
+      );
+      return;
+    }
+
     if (!selectedTarget) {
       setCalibrationMessage("Nessun target selezionato.");
       return;
@@ -824,7 +890,7 @@ export default function App() {
     setCalibrationMessage(
       `Calibrazione salvata su ${selectedTarget.label}: offset ${nextOffset.toFixed(
         1
-      )}°`
+      )}°. Usa il lato corto superiore dell’iPhone come asse di puntamento.`
     );
   }
 
@@ -836,6 +902,11 @@ export default function App() {
 
   async function startCamera() {
     setCameraError(null);
+
+    if (aimMode !== "camera") {
+      setCameraError("Passa alla modalità Camera AR sperimentale.");
+      return;
+    }
 
     if (isGuidanceDisabled) {
       setCameraError(
@@ -898,11 +969,29 @@ export default function App() {
     return styles.statusBad;
   }
 
+  function aimModeTitle(mode: AimMode): string {
+    if (mode === "telescope") return "Telescopio Push-To";
+    if (mode === "skyfinder") return "Sky Finder";
+    return "Camera AR sperimentale";
+  }
+
+  function aimModeDescription(mode: AimMode): string {
+    if (mode === "telescope") {
+      return "Fissa l’iPhone parallelo al tubo del telescopio. Usa il lato corto superiore del telefono come asse di puntamento. Muovi il telescopio finché appare TARGET LOCK.";
+    }
+
+    if (mode === "skyfinder") {
+      return "Per occhio nudo: l’app ti dice in quale direzione guardare e a che altezza cercare il target. Non richiede camera né fissaggio al telescopio.";
+    }
+
+    return "Modalità sperimentale: usa la camera posteriore come anteprima visiva. L’asse ottico della camera non è ancora calibrato separatamente.";
+  }
+
   return (
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V5.4 — Next Visibility Window</p>
+        <p style={styles.subtitle}>V5.5 — Aim Mode</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -916,6 +1005,47 @@ export default function App() {
           Heading {formatDeg(orientation.smoothHeading)}
         </span>
         {gps.error && <p style={styles.error}>{gps.error}</p>}
+      </section>
+
+      <section style={styles.card}>
+        <h2 style={styles.sectionTitle}>Modo puntamento</h2>
+
+        <div style={styles.modeGrid}>
+          <button
+            style={{
+              ...styles.modeButton,
+              ...(aimMode === "telescope" ? styles.modeButtonActive : {}),
+            }}
+            onClick={() => setAimMode("telescope")}
+          >
+            Telescopio
+          </button>
+
+          <button
+            style={{
+              ...styles.modeButton,
+              ...(aimMode === "skyfinder" ? styles.modeButtonActive : {}),
+            }}
+            onClick={() => setAimMode("skyfinder")}
+          >
+            Sky Finder
+          </button>
+
+          <button
+            style={{
+              ...styles.modeButton,
+              ...(aimMode === "camera" ? styles.modeButtonActive : {}),
+            }}
+            onClick={() => setAimMode("camera")}
+          >
+            Camera AR
+          </button>
+        </div>
+
+        <div style={styles.modeInfoBox}>
+          <div style={styles.modeInfoTitle}>{aimModeTitle(aimMode)}</div>
+          <div style={styles.modeInfoText}>{aimModeDescription(aimMode)}</div>
+        </div>
       </section>
 
       <section style={styles.card}>
@@ -975,7 +1105,66 @@ export default function App() {
         )}
       </section>
 
-      {isGuidanceDisabled ? (
+      {aimMode === "skyfinder" ? (
+        <section style={styles.skyFinderCard}>
+          <h2 style={styles.sectionTitle}>Sky Finder</h2>
+
+          <div style={styles.skyTargetName}>
+            Target: <strong>{selectedTarget?.label ?? "—"}</strong>
+          </div>
+
+          <div style={styles.skyGrid}>
+            <div style={styles.skyMetric}>
+              <span>Direzione</span>
+              <strong>{azimuthToCompass(selectedTarget?.azimuth ?? null)}</strong>
+            </div>
+
+            <div style={styles.skyMetric}>
+              <span>Azimut</span>
+              <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
+            </div>
+
+            <div style={styles.skyMetric}>
+              <span>Altezza</span>
+              <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
+            </div>
+
+            <div style={styles.skyMetric}>
+              <span>Fascia cielo</span>
+              <strong>{altitudeBand(selectedTarget?.altitude ?? null)}</strong>
+            </div>
+          </div>
+
+          <div style={styles.skyAdvice}>
+            {selectedTarget?.observableNow ? (
+              <>
+                Guarda verso <strong>{azimuthToCompass(selectedTarget.azimuth)}</strong>,
+                a quota <strong>{altitudeBand(selectedTarget.altitude)}</strong>.
+                Poi usa il cielo reale come riferimento: Luna, orizzonte, edifici e
+                direzioni cardinali.
+              </>
+            ) : currentSelectedPlan?.firstUsefulTime ? (
+              <>
+                Non cercarlo ora. Prima finestra utile:{" "}
+                <strong>{currentSelectedPlan.firstUsefulTime}</strong>. Momento
+                migliore: <strong>{currentSelectedPlan.bestTime ?? "—"}</strong>.
+              </>
+            ) : (
+              <>
+                Non cercarlo ora. Nessuna finestra utile nelle prossime{" "}
+                {FORECAST_HOURS} ore.
+              </>
+            )}
+          </div>
+
+          {isSolarTarget && (
+            <div style={styles.sunWarning}>
+              Il Sole resta solo dato astronomico. Non guardare né puntare
+              strumenti ottici verso il Sole senza filtro certificato.
+            </div>
+          )}
+        </section>
+      ) : isGuidanceDisabled ? (
         <section style={isSolarTarget ? styles.solarSafeCard : styles.disabledGuideCard}>
           <h2 style={styles.sectionTitle}>
             {isSolarTarget ? "Solar Safe Mode" : "Guida disattivata"}
@@ -1015,11 +1204,28 @@ export default function App() {
         </section>
       ) : (
         <section style={targetLock ? styles.lockCard : styles.card}>
-          <h2 style={styles.sectionTitle}>Precision Telescope</h2>
+          <h2 style={styles.sectionTitle}>
+            {aimMode === "camera" ? "Camera AR sperimentale" : "Precision Telescope"}
+          </h2>
 
           <div style={styles.targetName}>
             Target: <strong>{selectedTarget?.label ?? "—"}</strong>
           </div>
+
+          {aimMode === "telescope" && (
+            <div style={styles.noticeBox}>
+              Punta con il <strong>lato corto superiore dell’iPhone</strong>.
+              Se usi il telescopio, fissa l’iPhone parallelo al tubo e calibra
+              nella stessa posizione d’uso.
+            </div>
+          )}
+
+          {aimMode === "camera" && (
+            <div style={styles.noticeBox}>
+              AR sperimentale: la camera è una preview. L’asse ottico della
+              fotocamera non è ancora calibrato separatamente.
+            </div>
+          )}
 
           {targetLock ? (
             <div style={styles.lockText}>✓ TARGET LOCK</div>
@@ -1098,9 +1304,7 @@ export default function App() {
                 <div style={styles.planGrid}>
                   <span>Ora: {item.currentLabel}</span>
                   <span>Alt ora: {formatDeg(item.currentAltitude)}</span>
-                  <span>
-                    Prima utile: {item.firstUsefulTime ?? "—"}
-                  </span>
+                  <span>Prima utile: {item.firstUsefulTime ?? "—"}</span>
                   <span>Migliore: {item.bestTime ?? "—"}</span>
                   <span>Alt max: {item.bestAltitude.toFixed(1)}°</span>
                   <span>Score: {item.score}/100</span>
@@ -1140,13 +1344,30 @@ export default function App() {
         ))}
       </section>
 
-      <section style={isGuidanceDisabled ? styles.disabledArCard : styles.arCard}>
-        <h2 style={styles.sectionTitle}>AR Sky Overlay</h2>
+      <section
+        style={
+          aimMode === "camera" && !isGuidanceDisabled
+            ? styles.arCard
+            : styles.disabledArCard
+        }
+      >
+        <h2 style={styles.sectionTitle}>Camera AR</h2>
 
-        {isGuidanceDisabled ? (
+        {aimMode !== "camera" ? (
           <>
             <p style={styles.solarText}>
-              AR Sky Overlay disattivato per questo target.
+              Camera disattivata perché il modo attivo è{" "}
+              <strong>{aimModeTitle(aimMode)}</strong>.
+            </p>
+            <div style={styles.noticeBox}>
+              Passa a <strong>Camera AR sperimentale</strong> per usare la preview
+              video.
+            </div>
+          </>
+        ) : isGuidanceDisabled ? (
+          <>
+            <p style={styles.solarText}>
+              Camera AR disattivata per questo target.
             </p>
             <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
               {guidanceDisabledReason}
@@ -1155,8 +1376,8 @@ export default function App() {
         ) : (
           <>
             <p style={styles.smallText}>
-              Camera posteriore + overlay target. Punta il telefono finché il
-              marker entra nel mirino centrale.
+              Camera posteriore + overlay sperimentale. Per il puntamento
+              affidabile resta preferibile la modalità Telescopio Push-To.
             </p>
 
             {isStandalone && (
@@ -1291,6 +1512,82 @@ const styles: Record<string, CSSProperties> = {
     padding: 18,
     marginBottom: 18,
     boxShadow: "0 0 30px rgba(21,255,49,0.12)",
+  },
+  modeGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 10,
+  },
+  modeButton: {
+    background: "#11162c",
+    color: "#ffffff",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 12,
+    padding: "14px 12px",
+    fontSize: 17,
+    fontWeight: 900,
+  },
+  modeButtonActive: {
+    background: "#ffd400",
+    color: "#090909",
+    border: "1px solid rgba(255,212,0,0.8)",
+  },
+  modeInfoBox: {
+    marginTop: 14,
+    background: "#11162c",
+    borderRadius: 14,
+    padding: 14,
+    border: "1px solid rgba(255,255,255,0.08)",
+  },
+  modeInfoTitle: {
+    color: "#ffd400",
+    fontSize: 20,
+    fontWeight: 1000,
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  modeInfoText: {
+    color: "#d8dbea",
+    fontSize: 15,
+    lineHeight: 1.45,
+    fontWeight: 800,
+    textAlign: "center",
+  },
+  skyFinderCard: {
+    background: "#101d2d",
+    border: "2px solid rgba(0,183,255,0.45)",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+  },
+  skyTargetName: {
+    textAlign: "center",
+    fontSize: 24,
+    marginBottom: 14,
+  },
+  skyGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+    marginBottom: 14,
+  },
+  skyMetric: {
+    background: "#11162c",
+    borderRadius: 12,
+    padding: 12,
+    display: "grid",
+    gap: 4,
+    textAlign: "center",
+  },
+  skyAdvice: {
+    background: "rgba(255,212,0,0.12)",
+    border: "1px solid rgba(255,212,0,0.35)",
+    color: "#ffd400",
+    borderRadius: 14,
+    padding: 14,
+    lineHeight: 1.45,
+    fontWeight: 900,
+    textAlign: "center",
   },
   solarSafeCard: {
     background: "#21192c",
