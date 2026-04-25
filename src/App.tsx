@@ -71,6 +71,9 @@ const OFFSET_KEY = "astroPons.compassOffsetDeg";
 const FORECAST_HOURS = 12;
 const FORECAST_STEP_MINUTES = 15;
 
+const POINTER_AXIS =
+  "Asse di puntamento affidabile = lato corto superiore dell’iPhone.";
+
 const SKY_BODIES: SkyBody[] = [
   { body: Body.Sun, label: "Sole" },
   { body: Body.Moon, label: "Luna" },
@@ -218,13 +221,13 @@ function skyFinderTurnText(
   }
 
   if (correctedHeading === null) {
-    return "Attiva la bussola per sapere se stai guardando nella direzione giusta.";
+    return "Attiva la bussola per sapere dove punta il lato corto superiore dell’iPhone.";
   }
 
   const delta = normalize180(target.azimuth - correctedHeading);
 
   if (Math.abs(delta) <= 8) {
-    return "Sei orientato nella zona giusta. Ora cerca alla quota indicata.";
+    return "Il lato corto superiore dell’iPhone è orientato nella zona giusta. Ora cerca alla quota indicata.";
   }
 
   if (delta > 0) {
@@ -931,7 +934,7 @@ export default function App() {
 
     if (aimMode !== "telescope") {
       setCalibrationMessage(
-        "La calibrazione affidabile usa la modalità Telescopio Push-To: punta con il lato corto superiore dell’iPhone."
+        "La calibrazione affidabile usa la modalità Telescopio Push-To: punta con il lato corto superiore dell’iPhone verso il target."
       );
       return;
     }
@@ -968,7 +971,7 @@ export default function App() {
     setCalibrationMessage(
       `Calibrazione salvata su ${selectedTarget.label}: offset ${nextOffset.toFixed(
         1
-      )}°. Usa il lato corto superiore dell’iPhone come asse di puntamento.`
+      )}°. ${POINTER_AXIS}`
     );
   }
 
@@ -982,7 +985,7 @@ export default function App() {
     setCameraError(null);
 
     if (aimMode !== "camera") {
-      setCameraError("Passa alla modalità Camera AR sperimentale.");
+      setCameraError("Passa alla modalità Camera AR Preview.");
       return;
     }
 
@@ -1050,26 +1053,26 @@ export default function App() {
   function aimModeTitle(mode: AimMode): string {
     if (mode === "telescope") return "Telescopio Push-To";
     if (mode === "skyfinder") return "Sky Finder";
-    return "Camera AR Safe Mode";
+    return "Camera AR Preview";
   }
 
   function aimModeDescription(mode: AimMode): string {
     if (mode === "telescope") {
-      return "Fissa l’iPhone parallelo al tubo del telescopio. Usa il lato corto superiore del telefono come asse di puntamento. Muovi il telescopio finché appare TARGET LOCK.";
+      return "Allinea il lato corto superiore dell’iPhone parallelamente all’asse del tubo del telescopio. Muovi il telescopio finché appare TARGET LOCK.";
     }
 
     if (mode === "skyfinder") {
-      return "Per occhio nudo: l’app ti dice in quale direzione guardare e a che altezza cercare il target. Non richiede camera né fissaggio al telescopio.";
+      return "Per occhio nudo: la freccia blu indica dove punta il lato corto superiore dell’iPhone. Ruota il corpo/telefono finché la freccia si avvicina al target.";
     }
 
-    return "Preview sperimentale con camera posteriore. Non dichiara più TARGET LOCK perché l’asse ottico della fotocamera non è ancora calibrato separatamente.";
+    return "Camera solo preview. Il puntamento affidabile resta sul lato corto superiore dell’iPhone: la camera non è ancora un asse ottico calibrato.";
   }
 
   return (
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.1 — Camera AR Safe Mode</p>
+        <p style={styles.subtitle}>V6.2 — Pointer Axis Clarity</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1083,6 +1086,11 @@ export default function App() {
           Heading {formatDeg(orientation.smoothHeading)}
         </span>
         {gps.error && <p style={styles.error}>{gps.error}</p>}
+      </section>
+
+      <section style={styles.axisCard}>
+        <div style={styles.axisTitle}>Regola fisica dello strumento</div>
+        <div style={styles.axisText}>{POINTER_AXIS}</div>
       </section>
 
       <section style={styles.card}>
@@ -1128,6 +1136,11 @@ export default function App() {
 
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>Bussola + Calibrazione</h2>
+
+        <div style={styles.calibrationHint}>
+          Calibra tenendo il <strong>lato corto superiore dell’iPhone</strong>{" "}
+          puntato verso il target reale.
+        </div>
 
         <div style={styles.grid2}>
           <Info label="Heading raw" value={formatDeg(orientation.rawHeading)} />
@@ -1215,7 +1228,7 @@ export default function App() {
             </div>
 
             <div style={styles.skyMetric}>
-              <span>Bussola</span>
+              <span>Bussola corretta</span>
               <strong>{formatDeg(correctedHeading)}</strong>
             </div>
 
@@ -1256,15 +1269,16 @@ export default function App() {
         </section>
       ) : aimMode === "camera" && !isGuidanceDisabled ? (
         <section style={styles.cameraSafeCard}>
-          <h2 style={styles.sectionTitle}>Camera AR Safe Mode</h2>
+          <h2 style={styles.sectionTitle}>Camera AR Preview</h2>
 
           <div style={styles.targetName}>
             Target: <strong>{selectedTarget?.label ?? "—"}</strong>
           </div>
 
           <div style={styles.noticeBox}>
-            Preview camera attiva. Il marker è solo indicativo: non rappresenta
-            ancora una calibrazione reale dell’asse ottico della fotocamera.
+            Camera solo preview. Il puntamento affidabile resta sul{" "}
+            <strong>lato corto superiore dell’iPhone</strong>. La camera non è
+            ancora asse ottico calibrato.
           </div>
 
           <div style={styles.cameraSafeGrid}>
@@ -1291,7 +1305,7 @@ export default function App() {
 
           <div style={styles.cameraSafeWarning}>
             Per puntamento affidabile usa <strong>Telescopio Push-To</strong>.
-            La vera Camera AR arriverà con calibrazione camera separata.
+            Allinea sempre il lato corto superiore dell’iPhone all’asse desiderato.
           </div>
         </section>
       ) : isGuidanceDisabled ? (
@@ -1347,9 +1361,9 @@ export default function App() {
           </div>
 
           <div style={styles.noticeBox}>
-            Punta con il <strong>lato corto superiore dell’iPhone</strong>. Se
-            usi il telescopio, fissa l’iPhone parallelo al tubo e calibra nella
-            stessa posizione d’uso.
+            Allinea il <strong>lato corto superiore dell’iPhone</strong>{" "}
+            parallelamente all’asse del tubo del telescopio. Muovi il telescopio
+            finché appare <strong>TARGET LOCK</strong>.
           </div>
 
           {telescopeTargetLock ? (
@@ -1502,6 +1516,12 @@ export default function App() {
               dichiarato in questa modalità.
             </p>
 
+            <div style={styles.noticeBox}>
+              Puntamento sempre riferito al{" "}
+              <strong>lato corto superiore dell’iPhone</strong>. La camera è
+              solo una preview.
+            </div>
+
             {isStandalone && (
               <div style={styles.noticeBox}>
                 Modalità App iPhone rilevata. Se la camera non parte, apri Astro
@@ -1552,6 +1572,7 @@ export default function App() {
                 <div style={styles.arInstruction}>
                   <span style={styles.arPreviewText}>Preview indicativa</span>
                   <span>Asse camera non calibrato</span>
+                  <span>Punta reale: lato superiore iPhone</span>
                 </div>
               </div>
             </div>
@@ -1640,6 +1661,10 @@ function SkyRadar({
         )}
       </div>
 
+      <div style={styles.radarPointerLegend}>
+        Freccia blu = lato corto superiore dell’iPhone.
+      </div>
+
       <div style={styles.radarLegend}>
         <span>
           <strong>Centro</strong> = alto
@@ -1695,6 +1720,26 @@ const styles: Record<string, CSSProperties> = {
     textAlign: "center",
     color: "#e6e8f2",
     fontSize: 16,
+  },
+  axisCard: {
+    background: "rgba(0,183,255,0.10)",
+    border: "1px solid rgba(0,183,255,0.42)",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 18,
+    textAlign: "center",
+  },
+  axisTitle: {
+    color: "#00b7ff",
+    fontSize: 17,
+    fontWeight: 1000,
+    marginBottom: 6,
+  },
+  axisText: {
+    color: "#ffffff",
+    fontSize: 17,
+    fontWeight: 900,
+    lineHeight: 1.35,
   },
   card: {
     background: "#1b203a",
@@ -1783,6 +1828,17 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.45,
     fontWeight: 800,
     textAlign: "center",
+  },
+  calibrationHint: {
+    background: "rgba(255,212,0,0.10)",
+    border: "1px solid rgba(255,212,0,0.28)",
+    color: "#ffd400",
+    borderRadius: 12,
+    padding: 12,
+    fontWeight: 900,
+    textAlign: "center",
+    lineHeight: 1.35,
+    marginBottom: 14,
   },
   skyFinderCard: {
     background: "#101d2d",
@@ -1950,6 +2006,17 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 1000,
     textShadow: "0 2px 8px rgba(0,0,0,0.9)",
     zIndex: 4,
+  },
+  radarPointerLegend: {
+    background: "rgba(0,183,255,0.12)",
+    border: "1px solid rgba(0,183,255,0.35)",
+    color: "#00b7ff",
+    borderRadius: 12,
+    padding: 10,
+    fontSize: 14,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 8,
   },
   radarLegend: {
     display: "grid",
@@ -2372,7 +2439,7 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 14,
     padding: 14,
     color: "#ffd400",
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 1000,
     textAlign: "center",
   },
