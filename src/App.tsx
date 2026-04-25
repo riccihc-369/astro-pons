@@ -212,7 +212,7 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
-
+  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(null);
   const headingSamplesRef = useRef<number[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -243,7 +243,18 @@ export default function App() {
   const azLock = deltaAz !== null && Math.abs(deltaAz) <= 1.5;
   const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
   const targetLock = azLock && altLock;
+  const canCalibrateOnSelectedTarget =
+  selectedTarget !== null &&
+  selectedTarget.id !== "Sole" &&
+  selectedTarget.visible &&
+  orientation.smoothHeading !== null;
 
+  const calibrationButtonLabel =
+  selectedTarget?.id === "Sole"
+    ? "Sole non calibrabile direttamente"
+    : selectedTarget
+      ? `Calibra su ${selectedTarget.label}`
+      : "Calibra target";
   const arMarker = useMemo(() => {
     if (deltaAz === null || deltaAlt === null) return null;
 
@@ -432,14 +443,44 @@ export default function App() {
     }));
   }
 
-  function calibrateOnMoon() {
-    const moon = rows.find((row) => row.id === "Luna");
-    if (!moon || orientation.smoothHeading === null) return;
+  function calibrateOnSelectedTarget() {
+  setCalibrationMessage(null);
 
-    const nextOffset = normalize180(moon.azimuth - orientation.smoothHeading);
-    setOffsetDeg(nextOffset);
-    localStorage.setItem(OFFSET_KEY, String(nextOffset));
+  if (!selectedTarget) {
+    setCalibrationMessage("Nessun target selezionato.");
+    return;
   }
+
+  if (selectedTarget.id === "Sole") {
+    setCalibrationMessage(
+      "Per sicurezza il Sole non è calibrabile direttamente. Usa Luna, Giove, Venere o un altro corpo visibile."
+    );
+    return;
+  }
+
+  if (!selectedTarget.visible) {
+    setCalibrationMessage(
+      `${selectedTarget.label} è sotto l’orizzonte: scegli un corpo visibile.`
+    );
+    return;
+  }
+
+  if (orientation.smoothHeading === null) {
+    setCalibrationMessage("Attiva prima la bussola.");
+    return;
+  }
+
+  const nextOffset = normalize180(
+    selectedTarget.azimuth - orientation.smoothHeading
+  );
+
+  setOffsetDeg(nextOffset);
+  localStorage.setItem(OFFSET_KEY, String(nextOffset));
+
+  setCalibrationMessage(
+    `Calibrazione salvata su ${selectedTarget.label}: offset ${nextOffset.toFixed(1)}°`
+  );
+}
 
   function resetCalibration() {
     setOffsetDeg(0);
@@ -541,19 +582,14 @@ export default function App() {
         {orientation.error && <p style={styles.error}>{orientation.error}</p>}
 
         <div style={styles.buttonRow}>
-          <button style={styles.primaryButton} onClick={enableCompass}>
-            Attiva bussola
-          </button>
-
           <button
-            style={styles.yellowButton}
-            onClick={calibrateOnMoon}
-            disabled={
-              !rows.find((row) => row.id === "Luna") ||
-              orientation.smoothHeading === null
-            }
-          >
-            Calibra su Luna
+        style={{
+        ...styles.yellowButton,
+        ...(!canCalibrateOnSelectedTarget ? styles.disabledButton : {}),
+        }}
+        onClick={calibrateOnSelectedTarget}
+        disabled={!canCalibrateOnSelectedTarget}>
+          {calibrationButtonLabel}
           </button>
 
           <button style={styles.secondaryButton} onClick={resetCalibration}>
@@ -561,7 +597,15 @@ export default function App() {
           </button>
         </div>
       </section>
+{selectedTarget?.id === "Sole" && (
+  <div style={styles.sunWarning}>
+    Attenzione: non guardare né puntare telescopio/binocolo verso il Sole senza filtro solare certificato davanti all’ottica.
+  </div>
+)}
 
+{calibrationMessage && (
+  <div style={styles.noticeBox}>{calibrationMessage}</div>
+)}
       <section style={targetLock ? styles.lockCard : styles.card}>
         <h2 style={styles.sectionTitle}>Precision Telescope</h2>
 
@@ -1192,4 +1236,17 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 800,
     marginTop: 12,
   },
+  disabledButton: {
+  opacity: 0.45,
+},
+sunWarning: {
+  background: "rgba(255,90,90,0.14)",
+  color: "#ff7777",
+  border: "1px solid rgba(255,90,90,0.45)",
+  borderRadius: 12,
+  padding: 12,
+  fontWeight: 900,
+  marginTop: 14,
+  lineHeight: 1.4,
+},
 };
