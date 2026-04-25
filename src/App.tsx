@@ -86,7 +86,6 @@ function circularMeanDeg(values: number[]): number | null {
 
 function estimateDeviceAltitude(beta: number | null): number | null {
   if (beta === null || !Number.isFinite(beta)) return null;
-
   return clamp(90 - beta, -90, 90);
 }
 
@@ -124,6 +123,13 @@ function ratingFromScore(score: number): string {
 }
 
 function adviceFromAltitude(label: string, altitude: number): string {
+  if (label === "Sole") {
+    if (altitude > 0) {
+      return "Sole sopra l’orizzonte: consultabile solo come dato astronomico. Non puntare strumenti ottici senza filtro solare certificato.";
+    }
+    return "Sole sotto orizzonte: dato utile per ciclo giorno/notte.";
+  }
+
   if (altitude >= 50) return `${label} molto favorevole: alto/a e comodo/a da puntare.`;
   if (altitude >= 30) return `${label} buon target nelle prossime ore.`;
   if (altitude >= 15) return `${label} visibile, ma ancora abbastanza basso/a.`;
@@ -223,28 +229,32 @@ export default function App() {
     );
   }, [rows, selectedId]);
 
+  const isSolarTarget = selectedTarget?.id === "Sole";
+
   const correctedHeading = useMemo(() => {
     if (orientation.smoothHeading === null) return null;
     return normalize360(orientation.smoothHeading + offsetDeg);
   }, [orientation.smoothHeading, offsetDeg]);
 
   const deltaAz = useMemo(() => {
+    if (isSolarTarget) return null;
     if (!selectedTarget || correctedHeading === null) return null;
     return normalize180(selectedTarget.azimuth - correctedHeading);
-  }, [selectedTarget, correctedHeading]);
+  }, [selectedTarget, correctedHeading, isSolarTarget]);
 
   const deltaAlt = useMemo(() => {
+    if (isSolarTarget) return null;
     if (!selectedTarget || orientation.deviceAltitude === null) return null;
     return selectedTarget.altitude - orientation.deviceAltitude;
-  }, [selectedTarget, orientation.deviceAltitude]);
+  }, [selectedTarget, orientation.deviceAltitude, isSolarTarget]);
 
-  const azLock = deltaAz !== null && Math.abs(deltaAz) <= 1.5;
-  const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
-  const targetLock = azLock && altLock;
+  const azLock = !isSolarTarget && deltaAz !== null && Math.abs(deltaAz) <= 1.5;
+  const altLock = !isSolarTarget && deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
+  const targetLock = !isSolarTarget && azLock && altLock;
 
   const canCalibrateOnSelectedTarget =
     selectedTarget !== null &&
-    selectedTarget.id !== "Sole" &&
+    !isSolarTarget &&
     selectedTarget.visible &&
     orientation.smoothHeading !== null;
 
@@ -256,6 +266,7 @@ export default function App() {
         : "Calibra target";
 
   const arMarker = useMemo(() => {
+    if (isSolarTarget) return null;
     if (deltaAz === null || deltaAlt === null) return null;
 
     const horizontalFovDeg = 60;
@@ -271,7 +282,7 @@ export default function App() {
       y: clamp(rawY, 6, 94),
       inside,
     };
-  }, [deltaAz, deltaAlt]);
+  }, [deltaAz, deltaAlt, isSolarTarget]);
 
   const observationPlan = useMemo(() => {
     if (gps.lat === null || gps.lon === null) return [];
@@ -349,6 +360,22 @@ export default function App() {
 
     return () => window.clearInterval(interval);
   }, [gps.lat, gps.lon]);
+
+  useEffect(() => {
+    if (!isSolarTarget) return;
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraActive(false);
+    setCameraError(null);
+  }, [isSolarTarget]);
 
   useEffect(() => {
     return () => {
@@ -462,7 +489,7 @@ export default function App() {
       return;
     }
 
-    if (selectedTarget.id === "Sole") {
+    if (isSolarTarget) {
       setCalibrationMessage(
         "Per sicurezza il Sole non è calibrabile direttamente. Usa Luna, Giove, Venere o un altro corpo visibile."
       );
@@ -503,6 +530,13 @@ export default function App() {
 
   async function startCamera() {
     setCameraError(null);
+
+    if (isSolarTarget) {
+      setCameraError(
+        "AR Camera disattivata per il Sole. Usa il Sole solo come dato astronomico o con Solar Safe Mode."
+      );
+      return;
+    }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError("Camera non disponibile. Serve HTTPS o localhost.");
@@ -554,7 +588,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V5.1 — Target Calibration + Observation Pro</p>
+        <p style={styles.subtitle}>V5.2 — Solar Safe Mode + Observation Pro</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -616,15 +650,16 @@ export default function App() {
           </button>
         </div>
 
-        {selectedTarget?.id === "Sole" && (
+        {isSolarTarget && (
           <div style={styles.sunWarning}>
-            Attenzione: non guardare né puntare telescopio/binocolo verso il
-            Sole senza filtro solare certificato davanti all’ottica.
+            Attenzione: il Sole è disponibile solo come dato astronomico. Non
+            guardare né puntare telescopio, binocolo o camera verso il Sole senza
+            filtro solare certificato davanti all’ottica.
           </div>
         )}
 
         {selectedTarget &&
-          selectedTarget.id !== "Sole" &&
+          !isSolarTarget &&
           !selectedTarget.visible && (
             <div style={styles.noticeBox}>
               {selectedTarget.label} è sotto l’orizzonte: seleziona un corpo
@@ -637,42 +672,77 @@ export default function App() {
         )}
       </section>
 
-      <section style={targetLock ? styles.lockCard : styles.card}>
-        <h2 style={styles.sectionTitle}>Precision Telescope</h2>
+      {isSolarTarget ? (
+        <section style={styles.solarSafeCard}>
+          <h2 style={styles.sectionTitle}>Solar Safe Mode</h2>
 
-        <div style={styles.targetName}>
-          Target: <strong>{selectedTarget?.label ?? "—"}</strong>
-        </div>
+          <div style={styles.solarTitle}>Sole selezionato</div>
 
-        {targetLock ? (
-          <div style={styles.lockText}>✓ TARGET LOCK</div>
-        ) : (
-          <div style={styles.precisionGrid}>
-            <div style={styles.directionBox}>
-              <div style={azLock ? styles.okText : styles.bigYellow}>
-                {directionText(deltaAz)}
-              </div>
-              <div style={styles.metric}>Delta Az: {formatDeg(deltaAz)}</div>
+          <p style={styles.solarText}>
+            Precision Telescope, TARGET LOCK e AR guidance sono disattivati per
+            il Sole. Usa questi dati solo per orientamento generale,
+            architettura, ombre, esposizione o pianificazione.
+          </p>
+
+          <div style={styles.solarGrid}>
+            <div style={styles.solarMetric}>
+              <span>Azimut Sole</span>
+              <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
             </div>
-
-            <div style={styles.directionBox}>
-              <div style={altLock ? styles.okText : styles.bigYellow}>
-                {altitudeText(deltaAlt)}
-              </div>
-              <div style={styles.metric}>Delta Alt: {formatDeg(deltaAlt)}</div>
+            <div style={styles.solarMetric}>
+              <span>Altezza Sole</span>
+              <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
+            </div>
+            <div style={styles.solarMetric}>
+              <span>Stato</span>
+              <strong>{selectedTarget?.visible ? "Sopra orizzonte" : "Sotto"}</strong>
             </div>
           </div>
-        )}
 
-        <div style={styles.lockGrid}>
-          <span style={azLock ? styles.greenBadge : styles.redBadge}>
-            Azimut {azLock ? "OK" : "NO"}
-          </span>
-          <span style={altLock ? styles.greenBadge : styles.redBadge}>
-            Altezza {altLock ? "OK" : "NO"}
-          </span>
-        </div>
-      </section>
+          <div style={styles.sunWarning}>
+            Per osservazione solare usa solo filtro solare certificato davanti
+            all’ottica oppure tecniche indirette come proiezione/ombra. Non usare
+            mai telescopio o binocolo non filtrati.
+          </div>
+        </section>
+      ) : (
+        <section style={targetLock ? styles.lockCard : styles.card}>
+          <h2 style={styles.sectionTitle}>Precision Telescope</h2>
+
+          <div style={styles.targetName}>
+            Target: <strong>{selectedTarget?.label ?? "—"}</strong>
+          </div>
+
+          {targetLock ? (
+            <div style={styles.lockText}>✓ TARGET LOCK</div>
+          ) : (
+            <div style={styles.precisionGrid}>
+              <div style={styles.directionBox}>
+                <div style={azLock ? styles.okText : styles.bigYellow}>
+                  {directionText(deltaAz)}
+                </div>
+                <div style={styles.metric}>Delta Az: {formatDeg(deltaAz)}</div>
+              </div>
+
+              <div style={styles.directionBox}>
+                <div style={altLock ? styles.okText : styles.bigYellow}>
+                  {altitudeText(deltaAlt)}
+                </div>
+                <div style={styles.metric}>Delta Alt: {formatDeg(deltaAlt)}</div>
+              </div>
+            </div>
+          )}
+
+          <div style={styles.lockGrid}>
+            <span style={azLock ? styles.greenBadge : styles.redBadge}>
+              Azimut {azLock ? "OK" : "NO"}
+            </span>
+            <span style={altLock ? styles.greenBadge : styles.redBadge}>
+              Altezza {altLock ? "OK" : "NO"}
+            </span>
+          </div>
+        </section>
+      )}
 
       <section style={styles.card}>
         <label style={styles.label}>Seleziona target</label>
@@ -762,81 +832,96 @@ export default function App() {
         ))}
       </section>
 
-      <section style={styles.arCard}>
+      <section style={isSolarTarget ? styles.disabledArCard : styles.arCard}>
         <h2 style={styles.sectionTitle}>AR Sky Overlay</h2>
 
-        <p style={styles.smallText}>
-          Camera posteriore + overlay target. Punta il telefono finché il marker
-          entra nel mirino centrale.
-        </p>
-
-        {isStandalone && (
-          <div style={styles.noticeBox}>
-            Modalità App iPhone rilevata. Se la camera non parte, apri Astro
-            Pons in Safari per AR completo.
-          </div>
-        )}
-
-        <div style={styles.buttonRow}>
-          <button style={styles.primaryButton} onClick={startCamera}>
-            Avvia AR Camera
-          </button>
-          <button style={styles.secondaryButton} onClick={stopCamera}>
-            Stop Camera
-          </button>
-        </div>
-
-        {cameraError && <p style={styles.error}>{cameraError}</p>}
-
-        <div style={styles.arFrame}>
-          {cameraActive ? (
-            <video ref={videoRef} playsInline muted style={styles.arVideo} />
-          ) : (
-            <div style={styles.cameraPlaceholder}>Camera non attiva</div>
-          )}
-
-          <div style={styles.arOverlay}>
-            <div style={styles.reticle}>
-              <div style={styles.reticleH} />
-              <div style={styles.reticleV} />
+        {isSolarTarget ? (
+          <>
+            <p style={styles.solarText}>
+              AR Sky Overlay disattivato per il Sole. I dati solari restano
+              disponibili nelle tabelle e in Solar Safe Mode.
+            </p>
+            <div style={styles.sunWarning}>
+              Non usare la camera o strumenti ottici per puntare il Sole senza
+              filtro solare certificato.
             </div>
+          </>
+        ) : (
+          <>
+            <p style={styles.smallText}>
+              Camera posteriore + overlay target. Punta il telefono finché il
+              marker entra nel mirino centrale.
+            </p>
 
-            {arMarker && (
-              <div
-                style={{
-                  ...styles.marker,
-                  ...(arMarker.inside ? {} : styles.markerOffscreen),
-                  left: `${arMarker.x}%`,
-                  top: `${arMarker.y}%`,
-                }}
-              >
-                <div style={styles.markerDot} />
-                <div style={styles.markerLabel}>
-                  {selectedTarget?.label ?? "Target"}
-                </div>
+            {isStandalone && (
+              <div style={styles.noticeBox}>
+                Modalità App iPhone rilevata. Se la camera non parte, apri Astro
+                Pons in Safari per AR completo.
               </div>
             )}
 
-            <div style={styles.arInstruction}>
-              {targetLock ? (
-                <span style={styles.arLockText}>✓ TARGET IN CAMERA</span>
-              ) : (
-                <>
-                  <span>{directionText(deltaAz)}</span>
-                  <span>{altitudeText(deltaAlt)}</span>
-                </>
-              )}
+            <div style={styles.buttonRow}>
+              <button style={styles.primaryButton} onClick={startCamera}>
+                Avvia AR Camera
+              </button>
+              <button style={styles.secondaryButton} onClick={stopCamera}>
+                Stop Camera
+              </button>
             </div>
-          </div>
-        </div>
 
-        <div style={styles.arInfoGrid}>
-          <div style={styles.arMiniMetric}>Delta Az {formatDeg(deltaAz)}</div>
-          <div style={styles.arMiniMetric}>Delta Alt {formatDeg(deltaAlt)}</div>
-          <div style={styles.arMiniMetric}>
-            Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
-          </div>
-        </div>
+            {cameraError && <p style={styles.error}>{cameraError}</p>}
+
+            <div style={styles.arFrame}>
+              {cameraActive ? (
+                <video ref={videoRef} playsInline muted style={styles.arVideo} />
+              ) : (
+                <div style={styles.cameraPlaceholder}>Camera non attiva</div>
+              )}
+
+              <div style={styles.arOverlay}>
+                <div style={styles.reticle}>
+                  <div style={styles.reticleH} />
+                  <div style={styles.reticleV} />
+                </div>
+
+                {arMarker && (
+                  <div
+                    style={{
+                      ...styles.marker,
+                      ...(arMarker.inside ? {} : styles.markerOffscreen),
+                      left: `${arMarker.x}%`,
+                      top: `${arMarker.y}%`,
+                    }}
+                  >
+                    <div style={styles.markerDot} />
+                    <div style={styles.markerLabel}>
+                      {selectedTarget?.label ?? "Target"}
+                    </div>
+                  </div>
+                )}
+
+                <div style={styles.arInstruction}>
+                  {targetLock ? (
+                    <span style={styles.arLockText}>✓ TARGET IN CAMERA</span>
+                  ) : (
+                    <>
+                      <span>{directionText(deltaAz)}</span>
+                      <span>{altitudeText(deltaAlt)}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.arInfoGrid}>
+              <div style={styles.arMiniMetric}>Delta Az {formatDeg(deltaAz)}</div>
+              <div style={styles.arMiniMetric}>Delta Alt {formatDeg(deltaAlt)}</div>
+              <div style={styles.arMiniMetric}>
+                Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
+              </div>
+            </div>
+          </>
+        )}
       </section>
     </main>
   );
@@ -900,6 +985,43 @@ const styles: Record<string, CSSProperties> = {
     padding: 18,
     marginBottom: 18,
     boxShadow: "0 0 30px rgba(21,255,49,0.12)",
+  },
+  solarSafeCard: {
+    background: "#21192c",
+    border: "2px solid rgba(255,90,90,0.45)",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+    boxShadow: "0 0 30px rgba(255,90,90,0.08)",
+  },
+  solarTitle: {
+    color: "#ff7777",
+    fontSize: 30,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  solarText: {
+    color: "#e8eaf5",
+    fontSize: 16,
+    lineHeight: 1.45,
+    fontWeight: 800,
+    textAlign: "center",
+  },
+  solarGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 14,
+  },
+  solarMetric: {
+    background: "#11162c",
+    borderRadius: 12,
+    padding: 12,
+    display: "grid",
+    gap: 4,
+    textAlign: "center",
   },
   sectionTitle: {
     margin: "0 0 16px",
@@ -973,6 +1095,7 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 900,
     marginTop: 14,
     lineHeight: 1.4,
+    textAlign: "center",
   },
   targetName: {
     textAlign: "center",
@@ -1153,6 +1276,14 @@ const styles: Record<string, CSSProperties> = {
     padding: 18,
     marginBottom: 18,
     border: "1px solid rgba(0,183,255,0.35)",
+  },
+  disabledArCard: {
+    background: "#11162c",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+    border: "1px solid rgba(255,90,90,0.35)",
+    opacity: 0.95,
   },
   noticeBox: {
     background: "rgba(255,212,0,0.12)",
