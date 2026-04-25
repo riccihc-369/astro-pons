@@ -62,6 +62,11 @@ type ObservationItem = {
   hasUsefulWindow: boolean;
 };
 
+type RadarPoint = {
+  x: number;
+  y: number;
+};
+
 const OFFSET_KEY = "astroPons.compassOffsetDeg";
 const FORECAST_HOURS = 12;
 const FORECAST_STEP_MINUTES = 15;
@@ -170,6 +175,66 @@ function altitudeBand(altitude: number | null): string {
   if (altitude < 45) return "media";
   if (altitude < 65) return "alta";
   return "molto alta";
+}
+
+function statusColorValue(kind: StatusKind | undefined): string {
+  if (kind === "good") return "#15ff31";
+  if (kind === "medium") return "#ffd400";
+  if (kind === "solar") return "#ff9966";
+  return "#ff6666";
+}
+
+function radarPointFromAzAlt(
+  azimuth: number | null,
+  altitude: number | null
+): RadarPoint | null {
+  if (
+    azimuth === null ||
+    altitude === null ||
+    !Number.isFinite(azimuth) ||
+    !Number.isFinite(altitude)
+  ) {
+    return null;
+  }
+
+  const safeAltitude = clamp(altitude, 0, 90);
+
+  // Bordo esterno = orizzonte / basso.
+  // Centro = alto sopra la testa.
+  const radius = 43 * (1 - safeAltitude / 90);
+  const rad = (normalize360(azimuth) * Math.PI) / 180;
+
+  return {
+    x: 50 + Math.sin(rad) * radius,
+    y: 50 - Math.cos(rad) * radius,
+  };
+}
+
+function skyFinderTurnText(
+  target: BodyRow | null,
+  correctedHeading: number | null
+): string {
+  if (!target) return "Target non disponibile.";
+
+  if (!target.observableNow) {
+    return "Non cercarlo ora: usa la prima finestra utile indicata sotto.";
+  }
+
+  if (correctedHeading === null) {
+    return "Attiva la bussola per sapere se stai guardando nella direzione giusta.";
+  }
+
+  const delta = normalize180(target.azimuth - correctedHeading);
+
+  if (Math.abs(delta) <= 8) {
+    return "Sei orientato nella zona giusta. Ora cerca alla quota indicata.";
+  }
+
+  if (delta > 0) {
+    return `Ruota verso destra di circa ${Math.abs(delta).toFixed(0)}°.`;
+  }
+
+  return `Ruota verso sinistra di circa ${Math.abs(delta).toFixed(0)}°.`;
 }
 
 function analyzeObservability(
@@ -540,7 +605,9 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
-  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(null);
+  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(
+    null
+  );
 
   const headingSamplesRef = useRef<number[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -589,6 +656,15 @@ export default function App() {
     if (orientation.smoothHeading === null) return null;
     return normalize360(orientation.smoothHeading + offsetDeg);
   }, [orientation.smoothHeading, offsetDeg]);
+
+  const skyFinderDeltaAz = useMemo(() => {
+    if (!selectedTarget || correctedHeading === null) return null;
+    return normalize180(selectedTarget.azimuth - correctedHeading);
+  }, [selectedTarget, correctedHeading]);
+
+  const skyFinderMessage = useMemo(() => {
+    return skyFinderTurnText(selectedTarget, correctedHeading);
+  }, [selectedTarget, correctedHeading]);
 
   const deltaAz = useMemo(() => {
     if (isGuidanceDisabled) return null;
@@ -649,7 +725,8 @@ export default function App() {
   useEffect(() => {
     const standalone =
       window.matchMedia("(display-mode: standalone)").matches ||
-      (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+        true;
 
     setIsStandalone(standalone);
   }, []);
@@ -987,7 +1064,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V5.5 — Aim Mode</p>
+        <p style={styles.subtitle}>V6 — Sky Finder Radar</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1103,11 +1180,13 @@ export default function App() {
 
       {aimMode === "skyfinder" ? (
         <section style={styles.skyFinderCard}>
-          <h2 style={styles.sectionTitle}>Sky Finder</h2>
+          <h2 style={styles.sectionTitle}>Sky Finder Radar</h2>
 
           <div style={styles.skyTargetName}>
             Target: <strong>{selectedTarget?.label ?? "—"}</strong>
           </div>
+
+          <SkyRadar target={selectedTarget} heading={correctedHeading} />
 
           <div style={styles.skyGrid}>
             <div style={styles.skyMetric}>
@@ -1129,27 +1208,37 @@ export default function App() {
               <span>Fascia cielo</span>
               <strong>{altitudeBand(selectedTarget?.altitude ?? null)}</strong>
             </div>
+
+            <div style={styles.skyMetric}>
+              <span>Bussola</span>
+              <strong>{formatDeg(correctedHeading)}</strong>
+            </div>
+
+            <div style={styles.skyMetric}>
+              <span>Scarto direzione</span>
+              <strong>{formatDeg(skyFinderDeltaAz)}</strong>
+            </div>
           </div>
 
           <div style={styles.skyAdvice}>
+            <div style={styles.skyAdviceMain}>{skyFinderMessage}</div>
+
             {selectedTarget?.observableNow ? (
-              <>
-                Guarda verso <strong>{azimuthToCompass(selectedTarget.azimuth)}</strong>,
-                a quota <strong>{altitudeBand(selectedTarget.altitude)}</strong>.
-                Poi usa il cielo reale come riferimento: Luna, orizzonte, edifici e
-                direzioni cardinali.
-              </>
+              <div>
+                Guarda verso{" "}
+                <strong>{azimuthToCompass(selectedTarget.azimuth)}</strong>, a
+                quota <strong>{altitudeBand(selectedTarget.altitude)}</strong>.
+              </div>
             ) : currentSelectedPlan?.firstUsefulTime ? (
-              <>
-                Non cercarlo ora. Prima finestra utile:{" "}
+              <div>
+                Prima finestra utile:{" "}
                 <strong>{currentSelectedPlan.firstUsefulTime}</strong>. Momento
                 migliore: <strong>{currentSelectedPlan.bestTime ?? "—"}</strong>.
-              </>
+              </div>
             ) : (
-              <>
-                Non cercarlo ora. Nessuna finestra utile nelle prossime{" "}
-                {FORECAST_HOURS} ore.
-              </>
+              <div>
+                Nessuna finestra utile nelle prossime {FORECAST_HOURS} ore.
+              </div>
             )}
           </div>
 
@@ -1161,12 +1250,16 @@ export default function App() {
           )}
         </section>
       ) : isGuidanceDisabled ? (
-        <section style={isSolarTarget ? styles.solarSafeCard : styles.disabledGuideCard}>
+        <section
+          style={isSolarTarget ? styles.solarSafeCard : styles.disabledGuideCard}
+        >
           <h2 style={styles.sectionTitle}>
             {isSolarTarget ? "Solar Safe Mode" : "Guida disattivata"}
           </h2>
 
-          <div style={isSolarTarget ? styles.solarTitle : styles.disabledGuideTitle}>
+          <div
+            style={isSolarTarget ? styles.solarTitle : styles.disabledGuideTitle}
+          >
             {selectedTarget?.label ?? "Target"} selezionato
           </div>
 
@@ -1183,7 +1276,9 @@ export default function App() {
             </div>
             <div style={styles.solarMetric}>
               <span>Stato geometrico</span>
-              <strong>{selectedTarget?.visible ? "Sopra orizzonte" : "Sotto"}</strong>
+              <strong>
+                {selectedTarget?.visible ? "Sopra orizzonte" : "Sotto"}
+              </strong>
             </div>
             <div style={styles.solarMetric}>
               <span>Osservabilità</span>
@@ -1201,7 +1296,9 @@ export default function App() {
       ) : (
         <section style={targetLock ? styles.lockCard : styles.card}>
           <h2 style={styles.sectionTitle}>
-            {aimMode === "camera" ? "Camera AR sperimentale" : "Precision Telescope"}
+            {aimMode === "camera"
+              ? "Camera AR sperimentale"
+              : "Precision Telescope"}
           </h2>
 
           <div style={styles.targetName}>
@@ -1210,9 +1307,9 @@ export default function App() {
 
           {aimMode === "telescope" && (
             <div style={styles.noticeBox}>
-              Punta con il <strong>lato corto superiore dell’iPhone</strong>.
-              Se usi il telescopio, fissa l’iPhone parallelo al tubo e calibra
-              nella stessa posizione d’uso.
+              Punta con il <strong>lato corto superiore dell’iPhone</strong>. Se
+              usi il telescopio, fissa l’iPhone parallelo al tubo e calibra nella
+              stessa posizione d’uso.
             </div>
           )}
 
@@ -1273,8 +1370,8 @@ export default function App() {
         <h2 style={styles.sectionTitle}>Osservazione Pro</h2>
 
         <p style={styles.smallText}>
-          Migliori target nelle prossime {FORECAST_HOURS} ore. Ora l’app indica
-          anche la prima finestra utile, non solo lo stato attuale.
+          Migliori target nelle prossime {FORECAST_HOURS} ore. L’app indica
+          prima finestra utile, momento migliore e osservabilità reale.
         </p>
 
         {observationPlan.length === 0 ? (
@@ -1292,9 +1389,7 @@ export default function App() {
               >
                 <div style={styles.planTop}>
                   <strong>{item.label}</strong>
-                  <span style={statusStyle(item.statusKind)}>
-                    {item.rating}
-                  </span>
+                  <span style={statusStyle(item.statusKind)}>{item.rating}</span>
                 </div>
 
                 <div style={styles.planGrid}>
@@ -1356,8 +1451,8 @@ export default function App() {
               <strong>{aimModeTitle(aimMode)}</strong>.
             </p>
             <div style={styles.noticeBox}>
-              Passa a <strong>Camera AR sperimentale</strong> per usare la preview
-              video.
+              Passa a <strong>Camera AR sperimentale</strong> per usare la
+              preview video.
             </div>
           </>
         ) : isGuidanceDisabled ? (
@@ -1437,8 +1532,12 @@ export default function App() {
             </div>
 
             <div style={styles.arInfoGrid}>
-              <div style={styles.arMiniMetric}>Delta Az {formatDeg(deltaAz)}</div>
-              <div style={styles.arMiniMetric}>Delta Alt {formatDeg(deltaAlt)}</div>
+              <div style={styles.arMiniMetric}>
+                Delta Az {formatDeg(deltaAz)}
+              </div>
+              <div style={styles.arMiniMetric}>
+                Delta Alt {formatDeg(deltaAlt)}
+              </div>
               <div style={styles.arMiniMetric}>
                 Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
               </div>
@@ -1447,6 +1546,84 @@ export default function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function SkyRadar({
+  target,
+  heading,
+}: {
+  target: BodyRow | null;
+  heading: number | null;
+}) {
+  const point = radarPointFromAzAlt(
+    target?.azimuth ?? null,
+    target?.altitude ?? null
+  );
+
+  const color = statusColorValue(target?.statusKind);
+
+  return (
+    <div style={styles.radarWrap}>
+      <div style={styles.radar}>
+        <div style={styles.radarRingOuter} />
+        <div style={styles.radarRingMid} />
+        <div style={styles.radarRingInner} />
+
+        <div style={styles.radarAxisVertical} />
+        <div style={styles.radarAxisHorizontal} />
+
+        <div style={styles.radarLabelN}>N</div>
+        <div style={styles.radarLabelE}>E</div>
+        <div style={styles.radarLabelS}>S</div>
+        <div style={styles.radarLabelW}>O</div>
+
+        <div style={styles.radarZenith}>Zenit</div>
+        <div style={styles.radarHorizon}>orizzonte</div>
+
+        {heading !== null && (
+          <div
+            style={{
+              ...styles.radarHeadingLine,
+              transform: `translate(-50%, -100%) rotate(${heading}deg)`,
+            }}
+          />
+        )}
+
+        {point && target && (
+          <>
+            <div
+              style={{
+                ...styles.radarTargetDot,
+                left: `${point.x}%`,
+                top: `${point.y}%`,
+                background: color,
+                boxShadow: `0 0 22px ${color}`,
+              }}
+            />
+            <div
+              style={{
+                ...styles.radarTargetLabel,
+                left: `${point.x}%`,
+                top: `${point.y}%`,
+                color,
+              }}
+            >
+              {target.label}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={styles.radarLegend}>
+        <span>
+          <strong>Centro</strong> = alto
+        </span>
+        <span>
+          <strong>Bordo</strong> = basso/orizzonte
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -1583,6 +1760,145 @@ const styles: Record<string, CSSProperties> = {
     padding: 14,
     lineHeight: 1.45,
     fontWeight: 900,
+    textAlign: "center",
+  },
+  skyAdviceMain: {
+    fontSize: 18,
+    marginBottom: 8,
+  },
+  radarWrap: {
+    marginBottom: 16,
+  },
+  radar: {
+    position: "relative",
+    width: "min(100%, 340px)",
+    aspectRatio: "1 / 1",
+    margin: "0 auto 10px",
+    borderRadius: "50%",
+    background:
+      "radial-gradient(circle at center, rgba(0,183,255,0.18), rgba(5,8,31,0.92) 62%, rgba(5,8,31,1))",
+    border: "2px solid rgba(0,183,255,0.55)",
+    overflow: "hidden",
+    boxShadow: "0 0 28px rgba(0,183,255,0.18)",
+  },
+  radarRingOuter: {
+    position: "absolute",
+    inset: "8%",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.25)",
+  },
+  radarRingMid: {
+    position: "absolute",
+    inset: "26%",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.18)",
+  },
+  radarRingInner: {
+    position: "absolute",
+    inset: "42%",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.14)",
+  },
+  radarAxisVertical: {
+    position: "absolute",
+    left: "50%",
+    top: "7%",
+    bottom: "7%",
+    width: 1,
+    background: "rgba(255,255,255,0.18)",
+  },
+  radarAxisHorizontal: {
+    position: "absolute",
+    top: "50%",
+    left: "7%",
+    right: "7%",
+    height: 1,
+    background: "rgba(255,255,255,0.18)",
+  },
+  radarLabelN: {
+    position: "absolute",
+    top: 8,
+    left: "50%",
+    transform: "translateX(-50%)",
+    color: "#ffffff",
+    fontWeight: 1000,
+  },
+  radarLabelE: {
+    position: "absolute",
+    right: 10,
+    top: "50%",
+    transform: "translateY(-50%)",
+    color: "#ffffff",
+    fontWeight: 1000,
+  },
+  radarLabelS: {
+    position: "absolute",
+    bottom: 8,
+    left: "50%",
+    transform: "translateX(-50%)",
+    color: "#ffffff",
+    fontWeight: 1000,
+  },
+  radarLabelW: {
+    position: "absolute",
+    left: 10,
+    top: "50%",
+    transform: "translateY(-50%)",
+    color: "#ffffff",
+    fontWeight: 1000,
+  },
+  radarZenith: {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    transform: "translate(-50%, -50%)",
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  radarHorizon: {
+    position: "absolute",
+    left: "50%",
+    bottom: 30,
+    transform: "translateX(-50%)",
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 12,
+    fontWeight: 900,
+  },
+  radarHeadingLine: {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: 4,
+    height: "43%",
+    transformOrigin: "50% 100%",
+    background: "#00b7ff",
+    borderRadius: 999,
+    boxShadow: "0 0 18px rgba(0,183,255,0.8)",
+  },
+  radarTargetDot: {
+    position: "absolute",
+    width: 20,
+    height: 20,
+    borderRadius: "50%",
+    transform: "translate(-50%, -50%)",
+    border: "3px solid rgba(255,255,255,0.9)",
+    zIndex: 4,
+  },
+  radarTargetLabel: {
+    position: "absolute",
+    transform: "translate(-50%, 14px)",
+    fontSize: 14,
+    fontWeight: 1000,
+    textShadow: "0 2px 8px rgba(0,0,0,0.9)",
+    zIndex: 4,
+  },
+  radarLegend: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 8,
+    color: "#a9adbd",
+    fontSize: 13,
     textAlign: "center",
   },
   solarSafeCard: {
