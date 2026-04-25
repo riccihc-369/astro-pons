@@ -7,13 +7,25 @@ type SkyBody = {
   label: string;
 };
 
+type StatusKind = "good" | "medium" | "bad" | "solar";
+
+type Observability = {
+  observationLabel: string;
+  observationScore: number;
+  observationReason: string;
+  observableNow: boolean;
+  guideAllowed: boolean;
+  calibrationAllowed: boolean;
+  statusKind: StatusKind;
+};
+
 type BodyRow = {
   id: string;
   label: string;
   azimuth: number;
   altitude: number;
-  visible: boolean;
-};
+  visible: boolean; // geometrico: sopra orizzonte
+} & Observability;
 
 type GpsState = {
   lat: number | null;
@@ -41,6 +53,7 @@ type ObservationItem = {
   score: number;
   rating: string;
   advice: string;
+  statusKind: StatusKind;
 };
 
 const OFFSET_KEY = "astroPons.compassOffsetDeg";
@@ -95,46 +108,245 @@ function formatDeg(value: number | null, digits = 1): string {
 }
 
 function directionText(deltaAz: number | null): string {
-  if (deltaAz === null) return "Bussola non attiva";
+  if (deltaAz === null) return "Guida non disponibile";
   if (Math.abs(deltaAz) <= 1.5) return "Azimut centrato";
   return deltaAz > 0 ? "Ruota a destra →" : "← Ruota a sinistra";
 }
 
 function altitudeText(deltaAlt: number | null): string {
-  if (deltaAlt === null) return "Inclinazione non disponibile";
+  if (deltaAlt === null) return "Altezza non disponibile";
   if (Math.abs(deltaAlt) <= 2.0) return "Altezza centrata";
   return deltaAlt > 0 ? "Alza ↑" : "Abbassa ↓";
 }
 
-function scoreObservation(altitude: number): number {
-  if (altitude <= 0) return 0;
-  if (altitude >= 55) return 100;
-  if (altitude >= 40) return 85;
-  if (altitude >= 25) return 70;
-  if (altitude >= 15) return 50;
-  return 25;
-}
+function analyzeObservability(
+  label: string,
+  altitude: number,
+  sunAltitude: number
+): Observability {
+  const aboveHorizon = altitude > 0;
 
-function ratingFromScore(score: number): string {
-  if (score >= 85) return "OTTIMO";
-  if (score >= 70) return "BUONO";
-  if (score >= 50) return "DISCRETO";
-  return "SCARSO";
-}
-
-function adviceFromAltitude(label: string, altitude: number): string {
   if (label === "Sole") {
-    if (altitude > 0) {
-      return "Sole sopra l’orizzonte: consultabile solo come dato astronomico. Non puntare strumenti ottici senza filtro solare certificato.";
+    if (aboveHorizon) {
+      return {
+        observationLabel: "Dato solare",
+        observationScore: 5,
+        observationReason:
+          "Sole sopra l’orizzonte: disponibile solo come dato astronomico. Non usare guida, AR o telescopio senza filtro solare certificato.",
+        observableNow: false,
+        guideAllowed: false,
+        calibrationAllowed: false,
+        statusKind: "solar",
+      };
     }
-    return "Sole sotto orizzonte: dato utile per ciclo giorno/notte.";
+
+    return {
+      observationLabel: "Sotto",
+      observationScore: 0,
+      observationReason: "Sole sotto l’orizzonte.",
+      observableNow: false,
+      guideAllowed: false,
+      calibrationAllowed: false,
+      statusKind: "bad",
+    };
   }
 
-  if (altitude >= 50) return `${label} molto favorevole: alto/a e comodo/a da puntare.`;
-  if (altitude >= 30) return `${label} buon target nelle prossime ore.`;
-  if (altitude >= 15) return `${label} visibile, ma ancora abbastanza basso/a.`;
-  if (altitude > 0) return `${label} basso/a: meglio attendere se sta salendo.`;
-  return `${label} sotto orizzonte.`;
+  if (!aboveHorizon) {
+    return {
+      observationLabel: "Sotto",
+      observationScore: 0,
+      observationReason: `${label} è sotto l’orizzonte.`,
+      observableNow: false,
+      guideAllowed: false,
+      calibrationAllowed: false,
+      statusKind: "bad",
+    };
+  }
+
+  if (altitude < 8) {
+    return {
+      observationLabel: "Troppo basso",
+      observationScore: 10,
+      observationReason: `${label} è sopra l’orizzonte ma troppo basso: ostacoli, foschia e montagne probabili.`,
+      observableNow: false,
+      guideAllowed: false,
+      calibrationAllowed: false,
+      statusKind: "bad",
+    };
+  }
+
+  // Sole alto o crepuscolo civile: cielo ancora troppo luminoso.
+  if (sunAltitude > -6) {
+    if (label === "Luna") {
+      if (altitude >= 20) {
+        return {
+          observationLabel: "Possibile",
+          observationScore: 45,
+          observationReason:
+            "Luna potenzialmente visibile anche di giorno se il contrasto è sufficiente.",
+          observableNow: true,
+          guideAllowed: true,
+          calibrationAllowed: true,
+          statusKind: "medium",
+        };
+      }
+
+      return {
+        observationLabel: "Difficile",
+        observationScore: 20,
+        observationReason:
+          "Luna sopra l’orizzonte ma bassa o poco contrastata in cielo diurno.",
+        observableNow: false,
+        guideAllowed: false,
+        calibrationAllowed: false,
+        statusKind: "bad",
+      };
+    }
+
+    if (label === "Venere" && altitude >= 25) {
+      return {
+        observationLabel: "Difficile",
+        observationScore: 25,
+        observationReason:
+          "Venere può essere teoricamente individuabile di giorno, ma è difficile e non consigliata per calibrazione.",
+        observableNow: false,
+        guideAllowed: false,
+        calibrationAllowed: false,
+        statusKind: "medium",
+      };
+    }
+
+    return {
+      observationLabel: "Non ora",
+      observationScore: 0,
+      observationReason:
+        "Corpo sopra l’orizzonte, ma il cielo è troppo luminoso: non osservabile a occhio nudo ora.",
+      observableNow: false,
+      guideAllowed: false,
+      calibrationAllowed: false,
+      statusKind: "bad",
+    };
+  }
+
+  // Crepuscolo più profondo: Luna, Venere e Giove possono diventare utili.
+  if (sunAltitude > -12) {
+    if (label === "Luna" || label === "Venere" || label === "Giove") {
+      if (altitude >= 30) {
+        return {
+          observationLabel: "Buono",
+          observationScore: 70,
+          observationReason: `${label} è un buon target nel crepuscolo.`,
+          observableNow: true,
+          guideAllowed: true,
+          calibrationAllowed: true,
+          statusKind: "good",
+        };
+      }
+
+      if (altitude >= 15) {
+        return {
+          observationLabel: "Possibile",
+          observationScore: 50,
+          observationReason: `${label} è possibile, ma ancora non ideale.`,
+          observableNow: true,
+          guideAllowed: true,
+          calibrationAllowed: true,
+          statusKind: "medium",
+        };
+      }
+
+      return {
+        observationLabel: "Basso",
+        observationScore: 20,
+        observationReason: `${label} è basso nel crepuscolo: attendere se sta salendo.`,
+        observableNow: false,
+        guideAllowed: false,
+        calibrationAllowed: false,
+        statusKind: "bad",
+      };
+    }
+
+    if (altitude >= 30) {
+      return {
+        observationLabel: "Difficile",
+        observationScore: 35,
+        observationReason: `${label} sopra l’orizzonte, ma il cielo è ancora troppo chiaro per una buona osservazione.`,
+        observableNow: false,
+        guideAllowed: false,
+        calibrationAllowed: false,
+        statusKind: "medium",
+      };
+    }
+
+    return {
+      observationLabel: "Non ora",
+      observationScore: 0,
+      observationReason: `${label} non è ancora realisticamente osservabile.`,
+      observableNow: false,
+      guideAllowed: false,
+      calibrationAllowed: false,
+      statusKind: "bad",
+    };
+  }
+
+  // Notte / cielo sufficientemente scuro.
+  if (altitude >= 55) {
+    return {
+      observationLabel: "Ottimo",
+      observationScore: 100,
+      observationReason: `${label} è alto/a: target molto favorevole.`,
+      observableNow: true,
+      guideAllowed: true,
+      calibrationAllowed: true,
+      statusKind: "good",
+    };
+  }
+
+  if (altitude >= 35) {
+    return {
+      observationLabel: "Buono",
+      observationScore: 85,
+      observationReason: `${label} è ben posizionato/a per osservazione.`,
+      observableNow: true,
+      guideAllowed: true,
+      calibrationAllowed: true,
+      statusKind: "good",
+    };
+  }
+
+  if (altitude >= 20) {
+    return {
+      observationLabel: "Osservabile",
+      observationScore: 70,
+      observationReason: `${label} è osservabile, anche se non altissimo/a.`,
+      observableNow: true,
+      guideAllowed: true,
+      calibrationAllowed: true,
+      statusKind: "good",
+    };
+  }
+
+  if (altitude >= 10) {
+    return {
+      observationLabel: "Basso",
+      observationScore: 45,
+      observationReason: `${label} è osservabile ma basso/a: possibili ostacoli e turbolenza.`,
+      observableNow: true,
+      guideAllowed: true,
+      calibrationAllowed: true,
+      statusKind: "medium",
+    };
+  }
+
+  return {
+    observationLabel: "Troppo basso",
+    observationScore: 10,
+    observationReason: `${label} è troppo basso/a per una buona osservazione.`,
+    observableNow: false,
+    guideAllowed: false,
+    calibrationAllowed: false,
+    statusKind: "bad",
+  };
 }
 
 function buildObservationPlan(
@@ -148,22 +360,36 @@ function buildObservationPlan(
   return SKY_BODIES.map(({ body, label }) => {
     let bestAltitude = -90;
     let bestDate = now;
+    let bestAnalysis: Observability | null = null;
 
     for (let i = 0; i <= 24; i += 1) {
       const t = new Date(now.getTime() + i * 15 * 60 * 1000);
+
       const eq = Equator(body, t, observer, true, true);
       const hor = Horizon(t, observer, eq.ra, eq.dec, "normal");
 
-      if (hor.altitude > bestAltitude) {
+      const sunEq = Equator(Body.Sun, t, observer, true, true);
+      const sunHor = Horizon(t, observer, sunEq.ra, sunEq.dec, "normal");
+
+      const analysis = analyzeObservability(label, hor.altitude, sunHor.altitude);
+
+      const betterScore =
+        bestAnalysis === null ||
+        analysis.observationScore > bestAnalysis.observationScore ||
+        (analysis.observationScore === bestAnalysis.observationScore &&
+          hor.altitude > bestAltitude);
+
+      if (betterScore) {
+        bestAnalysis = analysis;
         bestAltitude = hor.altitude;
         bestDate = t;
       }
     }
 
-    const currentAltitude =
-      rows.find((row) => row.label === label)?.altitude ?? null;
-
-    const score = scoreObservation(bestAltitude);
+    const current = rows.find((row) => row.label === label);
+    const safeAnalysis =
+      bestAnalysis ??
+      analyzeObservability(label, bestAltitude, rows.find((r) => r.id === "Sole")?.altitude ?? 90);
 
     return {
       id: label,
@@ -173,14 +399,13 @@ function buildObservationPlan(
         minute: "2-digit",
       }),
       bestAltitude,
-      currentAltitude,
-      score,
-      rating: ratingFromScore(score),
-      advice: adviceFromAltitude(label, bestAltitude),
+      currentAltitude: current?.altitude ?? null,
+      score: safeAnalysis.observationScore,
+      rating: safeAnalysis.observationLabel,
+      advice: safeAnalysis.observationReason,
+      statusKind: safeAnalysis.statusKind,
     };
-  })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
+  }).sort((a, b) => b.score - a.score);
 }
 
 export default function App() {
@@ -213,9 +438,7 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
-  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(
-    null
-  );
+  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(null);
 
   const headingSamplesRef = useRef<number[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -230,6 +453,22 @@ export default function App() {
   }, [rows, selectedId]);
 
   const isSolarTarget = selectedTarget?.id === "Sole";
+  const isGuidanceDisabled =
+    selectedTarget === null || isSolarTarget || !selectedTarget.guideAllowed;
+
+  const guidanceDisabledReason = useMemo(() => {
+    if (!selectedTarget) return "Nessun target disponibile.";
+    if (isSolarTarget) {
+      return "Il Sole è in Solar Safe Mode: guida, AR e TARGET LOCK sono disattivati.";
+    }
+    if (!selectedTarget.visible) {
+      return `${selectedTarget.label} è sotto l’orizzonte.`;
+    }
+    if (!selectedTarget.guideAllowed) {
+      return selectedTarget.observationReason;
+    }
+    return null;
+  }, [selectedTarget, isSolarTarget]);
 
   const correctedHeading = useMemo(() => {
     if (orientation.smoothHeading === null) return null;
@@ -237,36 +476,40 @@ export default function App() {
   }, [orientation.smoothHeading, offsetDeg]);
 
   const deltaAz = useMemo(() => {
-    if (isSolarTarget) return null;
+    if (isGuidanceDisabled) return null;
     if (!selectedTarget || correctedHeading === null) return null;
     return normalize180(selectedTarget.azimuth - correctedHeading);
-  }, [selectedTarget, correctedHeading, isSolarTarget]);
+  }, [selectedTarget, correctedHeading, isGuidanceDisabled]);
 
   const deltaAlt = useMemo(() => {
-    if (isSolarTarget) return null;
+    if (isGuidanceDisabled) return null;
     if (!selectedTarget || orientation.deviceAltitude === null) return null;
     return selectedTarget.altitude - orientation.deviceAltitude;
-  }, [selectedTarget, orientation.deviceAltitude, isSolarTarget]);
+  }, [selectedTarget, orientation.deviceAltitude, isGuidanceDisabled]);
 
-  const azLock = !isSolarTarget && deltaAz !== null && Math.abs(deltaAz) <= 1.5;
-  const altLock = !isSolarTarget && deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
-  const targetLock = !isSolarTarget && azLock && altLock;
+  const azLock =
+    !isGuidanceDisabled && deltaAz !== null && Math.abs(deltaAz) <= 1.5;
+  const altLock =
+    !isGuidanceDisabled && deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
+  const targetLock = !isGuidanceDisabled && azLock && altLock;
 
   const canCalibrateOnSelectedTarget =
     selectedTarget !== null &&
     !isSolarTarget &&
-    selectedTarget.visible &&
+    selectedTarget.calibrationAllowed &&
     orientation.smoothHeading !== null;
 
   const calibrationButtonLabel =
     selectedTarget?.id === "Sole"
       ? "Sole non calibrabile direttamente"
-      : selectedTarget
-        ? `Calibra su ${selectedTarget.label}`
-        : "Calibra target";
+      : selectedTarget && !selectedTarget.calibrationAllowed
+        ? `${selectedTarget.label} non calibrabile ora`
+        : selectedTarget
+          ? `Calibra su ${selectedTarget.label}`
+          : "Calibra target";
 
   const arMarker = useMemo(() => {
-    if (isSolarTarget) return null;
+    if (isGuidanceDisabled) return null;
     if (deltaAz === null || deltaAlt === null) return null;
 
     const horizontalFovDeg = 60;
@@ -282,7 +525,7 @@ export default function App() {
       y: clamp(rawY, 6, 94),
       inside,
     };
-  }, [deltaAz, deltaAlt, isSolarTarget]);
+  }, [deltaAz, deltaAlt, isGuidanceDisabled]);
 
   const observationPlan = useMemo(() => {
     if (gps.lat === null || gps.lon === null) return [];
@@ -292,8 +535,7 @@ export default function App() {
   useEffect(() => {
     const standalone =
       window.matchMedia("(display-mode: standalone)").matches ||
-      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
-        true;
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
 
     setIsStandalone(standalone);
   }, []);
@@ -339,7 +581,7 @@ export default function App() {
       const now = new Date();
       const observer = new Observer(gps.lat!, gps.lon!, 0);
 
-      const nextRows = SKY_BODIES.map(({ body, label }) => {
+      const rawRows = SKY_BODIES.map(({ body, label }) => {
         const eq = Equator(body, now, observer, true, true);
         const hor = Horizon(now, observer, eq.ra, eq.dec, "normal");
 
@@ -352,6 +594,14 @@ export default function App() {
         };
       });
 
+      const sunAltitude =
+        rawRows.find((row) => row.id === "Sole")?.altitude ?? 90;
+
+      const nextRows: BodyRow[] = rawRows.map((row) => ({
+        ...row,
+        ...analyzeObservability(row.label, row.altitude, sunAltitude),
+      }));
+
       setRows(nextRows);
     };
 
@@ -362,7 +612,7 @@ export default function App() {
   }, [gps.lat, gps.lon]);
 
   useEffect(() => {
-    if (!isSolarTarget) return;
+    if (!isGuidanceDisabled) return;
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -374,8 +624,7 @@ export default function App() {
     }
 
     setCameraActive(false);
-    setCameraError(null);
-  }, [isSolarTarget]);
+  }, [isGuidanceDisabled]);
 
   useEffect(() => {
     return () => {
@@ -496,10 +745,8 @@ export default function App() {
       return;
     }
 
-    if (!selectedTarget.visible) {
-      setCalibrationMessage(
-        `${selectedTarget.label} è sotto l’orizzonte: scegli un corpo visibile.`
-      );
+    if (!selectedTarget.calibrationAllowed) {
+      setCalibrationMessage(selectedTarget.observationReason);
       return;
     }
 
@@ -531,9 +778,10 @@ export default function App() {
   async function startCamera() {
     setCameraError(null);
 
-    if (isSolarTarget) {
+    if (isGuidanceDisabled) {
       setCameraError(
-        "AR Camera disattivata per il Sole. Usa il Sole solo come dato astronomico o con Solar Safe Mode."
+        guidanceDisabledReason ??
+          "AR Camera disattivata: target non osservabile ora."
       );
       return;
     }
@@ -584,11 +832,18 @@ export default function App() {
     setCameraActive(false);
   }
 
+  function statusStyle(kind: StatusKind): CSSProperties {
+    if (kind === "good") return styles.statusGood;
+    if (kind === "medium") return styles.statusMedium;
+    if (kind === "solar") return styles.statusSolar;
+    return styles.statusBad;
+  }
+
   return (
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V5.2 — Solar Safe Mode + Observation Pro</p>
+        <p style={styles.subtitle}>V5.3 — Real Visibility Engine</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -650,60 +905,56 @@ export default function App() {
           </button>
         </div>
 
-        {isSolarTarget && (
-          <div style={styles.sunWarning}>
-            Attenzione: il Sole è disponibile solo come dato astronomico. Non
-            guardare né puntare telescopio, binocolo o camera verso il Sole senza
-            filtro solare certificato davanti all’ottica.
+        {selectedTarget && isGuidanceDisabled && (
+          <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
+            {guidanceDisabledReason}
           </div>
         )}
-
-        {selectedTarget &&
-          !isSolarTarget &&
-          !selectedTarget.visible && (
-            <div style={styles.noticeBox}>
-              {selectedTarget.label} è sotto l’orizzonte: seleziona un corpo
-              visibile per calibrare.
-            </div>
-          )}
 
         {calibrationMessage && (
           <div style={styles.noticeBox}>{calibrationMessage}</div>
         )}
       </section>
 
-      {isSolarTarget ? (
-        <section style={styles.solarSafeCard}>
-          <h2 style={styles.sectionTitle}>Solar Safe Mode</h2>
+      {isGuidanceDisabled ? (
+        <section style={isSolarTarget ? styles.solarSafeCard : styles.disabledGuideCard}>
+          <h2 style={styles.sectionTitle}>
+            {isSolarTarget ? "Solar Safe Mode" : "Guida disattivata"}
+          </h2>
 
-          <div style={styles.solarTitle}>Sole selezionato</div>
+          <div style={isSolarTarget ? styles.solarTitle : styles.disabledGuideTitle}>
+            {selectedTarget?.label ?? "Target"} selezionato
+          </div>
 
           <p style={styles.solarText}>
-            Precision Telescope, TARGET LOCK e AR guidance sono disattivati per
-            il Sole. Usa questi dati solo per orientamento generale,
-            architettura, ombre, esposizione o pianificazione.
+            {guidanceDisabledReason}
           </p>
 
           <div style={styles.solarGrid}>
             <div style={styles.solarMetric}>
-              <span>Azimut Sole</span>
+              <span>Azimut</span>
               <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
             </div>
             <div style={styles.solarMetric}>
-              <span>Altezza Sole</span>
+              <span>Altezza</span>
               <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
             </div>
             <div style={styles.solarMetric}>
-              <span>Stato</span>
+              <span>Stato geometrico</span>
               <strong>{selectedTarget?.visible ? "Sopra orizzonte" : "Sotto"}</strong>
+            </div>
+            <div style={styles.solarMetric}>
+              <span>Osservabilità</span>
+              <strong>{selectedTarget?.observationLabel ?? "—"}</strong>
             </div>
           </div>
 
-          <div style={styles.sunWarning}>
-            Per osservazione solare usa solo filtro solare certificato davanti
-            all’ottica oppure tecniche indirette come proiezione/ombra. Non usare
-            mai telescopio o binocolo non filtrati.
-          </div>
+          {isSolarTarget && (
+            <div style={styles.sunWarning}>
+              Per osservazione solare usa solo filtro solare certificato davanti
+              all’ottica oppure tecniche indirette come proiezione/ombra.
+            </div>
+          )}
         </section>
       ) : (
         <section style={targetLock ? styles.lockCard : styles.card}>
@@ -763,8 +1014,8 @@ export default function App() {
         <h2 style={styles.sectionTitle}>Osservazione Pro</h2>
 
         <p style={styles.smallText}>
-          Migliori target astronomici nelle prossime 6 ore, calcolati solo da
-          posizione, ora e altezza sull’orizzonte.
+          Migliori target nelle prossime 6 ore. Ora distinguiamo tra semplice
+          posizione sopra l’orizzonte e osservabilità reale.
         </p>
 
         {observationPlan.length === 0 ? (
@@ -782,17 +1033,13 @@ export default function App() {
               >
                 <div style={styles.planTop}>
                   <strong>{item.label}</strong>
-                  <span
-                    style={
-                      item.score >= 70 ? styles.ratingGood : styles.ratingWeak
-                    }
-                  >
+                  <span style={statusStyle(item.statusKind)}>
                     {item.rating}
                   </span>
                 </div>
 
                 <div style={styles.planGrid}>
-                  <span>Ora top: {item.bestTime}</span>
+                  <span>Ora migliore: {item.bestTime}</span>
                   <span>Alt max: {item.bestAltitude.toFixed(1)}°</span>
                   <span>Ora: {formatDeg(item.currentAltitude)}</span>
                   <span>Score: {item.score}/100</span>
@@ -810,7 +1057,7 @@ export default function App() {
           <span>Corpo</span>
           <span>Azimut</span>
           <span>Altezza</span>
-          <span>Stato</span>
+          <span>Osservabilità</span>
         </div>
 
         {rows.map((row) => (
@@ -825,25 +1072,23 @@ export default function App() {
             <span>{row.label}</span>
             <span>{row.azimuth.toFixed(1)}°</span>
             <span>{row.altitude.toFixed(1)}°</span>
-            <span style={row.visible ? styles.visible : styles.hidden}>
-              {row.visible ? "Visibile" : "Sotto"}
+            <span style={statusStyle(row.statusKind)}>
+              {row.observationLabel}
             </span>
           </button>
         ))}
       </section>
 
-      <section style={isSolarTarget ? styles.disabledArCard : styles.arCard}>
+      <section style={isGuidanceDisabled ? styles.disabledArCard : styles.arCard}>
         <h2 style={styles.sectionTitle}>AR Sky Overlay</h2>
 
-        {isSolarTarget ? (
+        {isGuidanceDisabled ? (
           <>
             <p style={styles.solarText}>
-              AR Sky Overlay disattivato per il Sole. I dati solari restano
-              disponibili nelle tabelle e in Solar Safe Mode.
+              AR Sky Overlay disattivato per questo target.
             </p>
-            <div style={styles.sunWarning}>
-              Non usare la camera o strumenti ottici per puntare il Sole senza
-              filtro solare certificato.
+            <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
+              {guidanceDisabledReason}
             </div>
           </>
         ) : (
@@ -994,9 +1239,23 @@ const styles: Record<string, CSSProperties> = {
     marginBottom: 18,
     boxShadow: "0 0 30px rgba(255,90,90,0.08)",
   },
+  disabledGuideCard: {
+    background: "#171b33",
+    border: "2px solid rgba(255,212,0,0.35)",
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 18,
+  },
   solarTitle: {
     color: "#ff7777",
     fontSize: 30,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  disabledGuideTitle: {
+    color: "#ffd400",
+    fontSize: 28,
     fontWeight: 1000,
     textAlign: "center",
     marginBottom: 12,
@@ -1185,17 +1444,17 @@ const styles: Record<string, CSSProperties> = {
   },
   tableHeader: {
     display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr",
+    gridTemplateColumns: "1.1fr 0.9fr 0.9fr 1.2fr",
     gap: 8,
     padding: "14px 12px",
     background: "#1b203a",
     color: "#ffffff",
     fontWeight: 900,
-    fontSize: 15,
+    fontSize: 14,
   },
   tableRow: {
     display: "grid",
-    gridTemplateColumns: "1.2fr 1fr 1fr 1fr",
+    gridTemplateColumns: "1.1fr 0.9fr 0.9fr 1.2fr",
     gap: 8,
     width: "100%",
     padding: "16px 12px",
@@ -1203,18 +1462,12 @@ const styles: Record<string, CSSProperties> = {
     border: 0,
     borderTop: "1px solid rgba(255,255,255,0.08)",
     color: "#e8eaf5",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 800,
     textAlign: "left",
   },
   selectedRow: {
     background: "#303755",
-  },
-  visible: {
-    color: "#15ff31",
-  },
-  hidden: {
-    color: "#ff6666",
   },
   smallText: {
     color: "#a9adbd",
@@ -1260,14 +1513,20 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 14,
     lineHeight: 1.35,
   },
-  ratingGood: {
+  statusGood: {
     color: "#15ff31",
-    fontSize: 14,
     fontWeight: 1000,
   },
-  ratingWeak: {
-    color: "#ffcc66",
-    fontSize: 14,
+  statusMedium: {
+    color: "#ffd400",
+    fontWeight: 1000,
+  },
+  statusBad: {
+    color: "#ff6666",
+    fontWeight: 1000,
+  },
+  statusSolar: {
+    color: "#ff9966",
     fontWeight: 1000,
   },
   arCard: {
