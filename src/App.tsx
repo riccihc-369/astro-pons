@@ -24,7 +24,7 @@ type BodyRow = {
   label: string;
   azimuth: number;
   altitude: number;
-  visible: boolean; // geometrico: sopra orizzonte
+  visible: boolean;
 } & Observability;
 
 type GpsState = {
@@ -47,16 +47,22 @@ type OrientationState = {
 type ObservationItem = {
   id: string;
   label: string;
-  bestTime: string;
-  bestAltitude: number;
+  currentLabel: string;
+  currentReason: string;
   currentAltitude: number | null;
+  firstUsefulTime: string | null;
+  bestTime: string | null;
+  bestAltitude: number;
   score: number;
   rating: string;
   advice: string;
   statusKind: StatusKind;
+  hasUsefulWindow: boolean;
 };
 
 const OFFSET_KEY = "astroPons.compassOffsetDeg";
+const FORECAST_HOURS = 12;
+const FORECAST_STEP_MINUTES = 15;
 
 const SKY_BODIES: SkyBody[] = [
   { body: Body.Sun, label: "Sole" },
@@ -105,6 +111,15 @@ function estimateDeviceAltitude(beta: number | null): number | null {
 function formatDeg(value: number | null, digits = 1): string {
   if (value === null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(digits)}°`;
+}
+
+function formatTime(date: Date | null): string | null {
+  if (!date) return null;
+
+  return date.toLocaleTimeString("it-CH", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function directionText(deltaAz: number | null): string {
@@ -175,7 +190,6 @@ function analyzeObservability(
     };
   }
 
-  // Sole alto o crepuscolo civile: cielo ancora troppo luminoso.
   if (sunAltitude > -6) {
     if (label === "Luna") {
       if (altitude >= 20) {
@@ -228,7 +242,6 @@ function analyzeObservability(
     };
   }
 
-  // Crepuscolo più profondo: Luna, Venere e Giove possono diventare utili.
   if (sunAltitude > -12) {
     if (label === "Luna" || label === "Venere" || label === "Giove") {
       if (altitude >= 30) {
@@ -289,7 +302,6 @@ function analyzeObservability(
     };
   }
 
-  // Notte / cielo sufficientemente scuro.
   if (altitude >= 55) {
     return {
       observationLabel: "Ottimo",
@@ -359,11 +371,27 @@ function buildObservationPlan(
 
   return SKY_BODIES.map(({ body, label }) => {
     let bestAltitude = -90;
-    let bestDate = now;
+    let bestDate: Date | null = null;
     let bestAnalysis: Observability | null = null;
+    let firstUsefulDate: Date | null = null;
 
-    for (let i = 0; i <= 24; i += 1) {
-      const t = new Date(now.getTime() + i * 15 * 60 * 1000);
+    const currentRow = rows.find((row) => row.label === label);
+    const currentAnalysis =
+      currentRow ??
+      ({
+        observationLabel: "—",
+        observationScore: 0,
+        observationReason: "Dati attuali non ancora disponibili.",
+        observableNow: false,
+        guideAllowed: false,
+        calibrationAllowed: false,
+        statusKind: "bad",
+      } as BodyRow);
+
+    const steps = Math.floor((FORECAST_HOURS * 60) / FORECAST_STEP_MINUTES);
+
+    for (let i = 0; i <= steps; i += 1) {
+      const t = new Date(now.getTime() + i * FORECAST_STEP_MINUTES * 60 * 1000);
 
       const eq = Equator(body, t, observer, true, true);
       const hor = Horizon(t, observer, eq.ra, eq.dec, "normal");
@@ -373,39 +401,66 @@ function buildObservationPlan(
 
       const analysis = analyzeObservability(label, hor.altitude, sunHor.altitude);
 
-      const betterScore =
+      if (analysis.observableNow && firstUsefulDate === null) {
+        firstUsefulDate = t;
+      }
+
+      const isBetter =
         bestAnalysis === null ||
         analysis.observationScore > bestAnalysis.observationScore ||
         (analysis.observationScore === bestAnalysis.observationScore &&
           hor.altitude > bestAltitude);
 
-      if (betterScore) {
+      if (isBetter) {
         bestAnalysis = analysis;
         bestAltitude = hor.altitude;
         bestDate = t;
       }
     }
 
-    const current = rows.find((row) => row.label === label);
-    const safeAnalysis =
+    const finalBestAnalysis =
       bestAnalysis ??
       analyzeObservability(label, bestAltitude, rows.find((r) => r.id === "Sole")?.altitude ?? 90);
+
+    const firstUsefulTime = formatTime(firstUsefulDate);
+    const bestTime = formatTime(bestDate);
+
+    let advice: string;
+
+    if (label === "Sole") {
+      advice = finalBestAnalysis.observationReason;
+    } else if (currentRow?.observableNow) {
+      advice = `${label} è osservabile ora. Momento migliore: ${bestTime ?? "—"}.`;
+    } else if (firstUsefulTime) {
+      advice = `${label} non è osservabile ora. Prima finestra utile: ${firstUsefulTime}. Momento migliore: ${bestTime ?? "—"}.`;
+    } else {
+      advice = `Nessuna finestra utile nelle prossime ${FORECAST_HOURS} ore. ${currentAnalysis.observationReason}`;
+    }
 
     return {
       id: label,
       label,
-      bestTime: bestDate.toLocaleTimeString("it-CH", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
+      currentLabel: currentAnalysis.observationLabel,
+      currentReason: currentAnalysis.observationReason,
+      currentAltitude: currentRow?.altitude ?? null,
+      firstUsefulTime,
+      bestTime,
       bestAltitude,
-      currentAltitude: current?.altitude ?? null,
-      score: safeAnalysis.observationScore,
-      rating: safeAnalysis.observationLabel,
-      advice: safeAnalysis.observationReason,
-      statusKind: safeAnalysis.statusKind,
+      score: finalBestAnalysis.observationScore,
+      rating: finalBestAnalysis.observationLabel,
+      advice,
+      statusKind: finalBestAnalysis.statusKind,
+      hasUsefulWindow: firstUsefulDate !== null,
     };
-  }).sort((a, b) => b.score - a.score);
+  }).sort((a, b) => {
+    if (a.id === "Sole" && b.id !== "Sole") return 1;
+    if (b.id === "Sole" && a.id !== "Sole") return -1;
+
+    if (a.hasUsefulWindow && !b.hasUsefulWindow) return -1;
+    if (b.hasUsefulWindow && !a.hasUsefulWindow) return 1;
+
+    return b.score - a.score;
+  });
 }
 
 export default function App() {
@@ -458,15 +513,19 @@ export default function App() {
 
   const guidanceDisabledReason = useMemo(() => {
     if (!selectedTarget) return "Nessun target disponibile.";
+
     if (isSolarTarget) {
       return "Il Sole è in Solar Safe Mode: guida, AR e TARGET LOCK sono disattivati.";
     }
+
     if (!selectedTarget.visible) {
       return `${selectedTarget.label} è sotto l’orizzonte.`;
     }
+
     if (!selectedTarget.guideAllowed) {
       return selectedTarget.observationReason;
     }
+
     return null;
   }, [selectedTarget, isSolarTarget]);
 
@@ -843,7 +902,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V5.3 — Real Visibility Engine</p>
+        <p style={styles.subtitle}>V5.4 — Next Visibility Window</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -926,9 +985,7 @@ export default function App() {
             {selectedTarget?.label ?? "Target"} selezionato
           </div>
 
-          <p style={styles.solarText}>
-            {guidanceDisabledReason}
-          </p>
+          <p style={styles.solarText}>{guidanceDisabledReason}</p>
 
           <div style={styles.solarGrid}>
             <div style={styles.solarMetric}>
@@ -1014,15 +1071,15 @@ export default function App() {
         <h2 style={styles.sectionTitle}>Osservazione Pro</h2>
 
         <p style={styles.smallText}>
-          Migliori target nelle prossime 6 ore. Ora distinguiamo tra semplice
-          posizione sopra l’orizzonte e osservabilità reale.
+          Migliori target nelle prossime {FORECAST_HOURS} ore. Ora l’app indica
+          anche la prima finestra utile, non solo lo stato attuale.
         </p>
 
         {observationPlan.length === 0 ? (
           <p style={styles.smallText}>Attendo GPS e dati astronomici...</p>
         ) : (
           <div style={styles.planList}>
-            {observationPlan.slice(0, 5).map((item) => (
+            {observationPlan.slice(0, 6).map((item) => (
               <button
                 key={item.id}
                 style={{
@@ -1039,9 +1096,13 @@ export default function App() {
                 </div>
 
                 <div style={styles.planGrid}>
-                  <span>Ora migliore: {item.bestTime}</span>
+                  <span>Ora: {item.currentLabel}</span>
+                  <span>Alt ora: {formatDeg(item.currentAltitude)}</span>
+                  <span>
+                    Prima utile: {item.firstUsefulTime ?? "—"}
+                  </span>
+                  <span>Migliore: {item.bestTime ?? "—"}</span>
                   <span>Alt max: {item.bestAltitude.toFixed(1)}°</span>
-                  <span>Ora: {formatDeg(item.currentAltitude)}</span>
                   <span>Score: {item.score}/100</span>
                 </div>
 
