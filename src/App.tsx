@@ -87,10 +87,6 @@ function circularMeanDeg(values: number[]): number | null {
 function estimateDeviceAltitude(beta: number | null): number | null {
   if (beta === null || !Number.isFinite(beta)) return null;
 
-  // Stima pratica per iPhone in portrait:
-  // beta ~ 90° = telefono verticale verso orizzonte => altitudine ~ 0°
-  // beta ~ 60° = telefono inclinato verso alto => altitudine ~ +30°
-  // beta ~ 120° = telefono inclinato verso basso => altitudine ~ -30°
   return clamp(90 - beta, -90, 90);
 }
 
@@ -147,7 +143,6 @@ function buildObservationPlan(
     let bestAltitude = -90;
     let bestDate = now;
 
-    // Prossime 6 ore, step ogni 15 minuti.
     for (let i = 0; i <= 24; i += 1) {
       const t = new Date(now.getTime() + i * 15 * 60 * 1000);
       const eq = Equator(body, t, observer, true, true);
@@ -212,7 +207,10 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
-  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(null);
+  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(
+    null
+  );
+
   const headingSamplesRef = useRef<number[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -243,18 +241,20 @@ export default function App() {
   const azLock = deltaAz !== null && Math.abs(deltaAz) <= 1.5;
   const altLock = deltaAlt !== null && Math.abs(deltaAlt) <= 2.0;
   const targetLock = azLock && altLock;
+
   const canCalibrateOnSelectedTarget =
-  selectedTarget !== null &&
-  selectedTarget.id !== "Sole" &&
-  selectedTarget.visible &&
-  orientation.smoothHeading !== null;
+    selectedTarget !== null &&
+    selectedTarget.id !== "Sole" &&
+    selectedTarget.visible &&
+    orientation.smoothHeading !== null;
 
   const calibrationButtonLabel =
-  selectedTarget?.id === "Sole"
-    ? "Sole non calibrabile direttamente"
-    : selectedTarget
-      ? `Calibra su ${selectedTarget.label}`
-      : "Calibra target";
+    selectedTarget?.id === "Sole"
+      ? "Sole non calibrabile direttamente"
+      : selectedTarget
+        ? `Calibra su ${selectedTarget.label}`
+        : "Calibra target";
+
   const arMarker = useMemo(() => {
     if (deltaAz === null || deltaAlt === null) return null;
 
@@ -281,7 +281,8 @@ export default function App() {
   useEffect(() => {
     const standalone =
       window.matchMedia("(display-mode: standalone)").matches ||
-      (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+        true;
 
     setIsStandalone(standalone);
   }, []);
@@ -359,7 +360,16 @@ export default function App() {
   async function enableCompass() {
     setOrientation((prev) => ({ ...prev, error: null }));
 
-    const DeviceOrientation = DeviceOrientationEvent as unknown as {
+    if (!("DeviceOrientationEvent" in window)) {
+      setOrientation((prev) => ({
+        ...prev,
+        enabled: false,
+        error: "Orientamento dispositivo non disponibile su questo browser.",
+      }));
+      return;
+    }
+
+    const DeviceOrientation = window.DeviceOrientationEvent as unknown as {
       requestPermission?: () => Promise<"granted" | "denied">;
     };
 
@@ -425,9 +435,10 @@ export default function App() {
     const deviceAltitude = estimateDeviceAltitude(beta);
 
     if (rawHeading !== null) {
-      headingSamplesRef.current = [...headingSamplesRef.current, rawHeading].slice(
-        -10
-      );
+      headingSamplesRef.current = [
+        ...headingSamplesRef.current,
+        rawHeading,
+      ].slice(-10);
     }
 
     const smoothHeading = circularMeanDeg(headingSamplesRef.current);
@@ -444,47 +455,50 @@ export default function App() {
   }
 
   function calibrateOnSelectedTarget() {
-  setCalibrationMessage(null);
+    setCalibrationMessage(null);
 
-  if (!selectedTarget) {
-    setCalibrationMessage("Nessun target selezionato.");
-    return;
-  }
+    if (!selectedTarget) {
+      setCalibrationMessage("Nessun target selezionato.");
+      return;
+    }
 
-  if (selectedTarget.id === "Sole") {
-    setCalibrationMessage(
-      "Per sicurezza il Sole non è calibrabile direttamente. Usa Luna, Giove, Venere o un altro corpo visibile."
+    if (selectedTarget.id === "Sole") {
+      setCalibrationMessage(
+        "Per sicurezza il Sole non è calibrabile direttamente. Usa Luna, Giove, Venere o un altro corpo visibile."
+      );
+      return;
+    }
+
+    if (!selectedTarget.visible) {
+      setCalibrationMessage(
+        `${selectedTarget.label} è sotto l’orizzonte: scegli un corpo visibile.`
+      );
+      return;
+    }
+
+    if (orientation.smoothHeading === null) {
+      setCalibrationMessage("Attiva prima la bussola.");
+      return;
+    }
+
+    const nextOffset = normalize180(
+      selectedTarget.azimuth - orientation.smoothHeading
     );
-    return;
-  }
 
-  if (!selectedTarget.visible) {
+    setOffsetDeg(nextOffset);
+    localStorage.setItem(OFFSET_KEY, String(nextOffset));
+
     setCalibrationMessage(
-      `${selectedTarget.label} è sotto l’orizzonte: scegli un corpo visibile.`
+      `Calibrazione salvata su ${selectedTarget.label}: offset ${nextOffset.toFixed(
+        1
+      )}°`
     );
-    return;
   }
-
-  if (orientation.smoothHeading === null) {
-    setCalibrationMessage("Attiva prima la bussola.");
-    return;
-  }
-
-  const nextOffset = normalize180(
-    selectedTarget.azimuth - orientation.smoothHeading
-  );
-
-  setOffsetDeg(nextOffset);
-  localStorage.setItem(OFFSET_KEY, String(nextOffset));
-
-  setCalibrationMessage(
-    `Calibrazione salvata su ${selectedTarget.label}: offset ${nextOffset.toFixed(1)}°`
-  );
-}
 
   function resetCalibration() {
     setOffsetDeg(0);
     localStorage.removeItem(OFFSET_KEY);
+    setCalibrationMessage("Calibrazione azzerata.");
   }
 
   async function startCamera() {
@@ -540,7 +554,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V5 — Observation Pro + AR Sky Overlay</p>
+        <p style={styles.subtitle}>V5.1 — Target Calibration + Observation Pro</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -582,30 +596,47 @@ export default function App() {
         {orientation.error && <p style={styles.error}>{orientation.error}</p>}
 
         <div style={styles.buttonRow}>
+          <button style={styles.primaryButton} onClick={enableCompass}>
+            Attiva bussola
+          </button>
+
           <button
-        style={{
-        ...styles.yellowButton,
-        ...(!canCalibrateOnSelectedTarget ? styles.disabledButton : {}),
-        }}
-        onClick={calibrateOnSelectedTarget}
-        disabled={!canCalibrateOnSelectedTarget}>
-          {calibrationButtonLabel}
+            style={{
+              ...styles.yellowButton,
+              ...(!canCalibrateOnSelectedTarget ? styles.disabledButton : {}),
+            }}
+            onClick={calibrateOnSelectedTarget}
+            disabled={!canCalibrateOnSelectedTarget}
+          >
+            {calibrationButtonLabel}
           </button>
 
           <button style={styles.secondaryButton} onClick={resetCalibration}>
             Reset calibrazione
           </button>
         </div>
-      </section>
-{selectedTarget?.id === "Sole" && (
-  <div style={styles.sunWarning}>
-    Attenzione: non guardare né puntare telescopio/binocolo verso il Sole senza filtro solare certificato davanti all’ottica.
-  </div>
-)}
 
-{calibrationMessage && (
-  <div style={styles.noticeBox}>{calibrationMessage}</div>
-)}
+        {selectedTarget?.id === "Sole" && (
+          <div style={styles.sunWarning}>
+            Attenzione: non guardare né puntare telescopio/binocolo verso il
+            Sole senza filtro solare certificato davanti all’ottica.
+          </div>
+        )}
+
+        {selectedTarget &&
+          selectedTarget.id !== "Sole" &&
+          !selectedTarget.visible && (
+            <div style={styles.noticeBox}>
+              {selectedTarget.label} è sotto l’orizzonte: seleziona un corpo
+              visibile per calibrare.
+            </div>
+          )}
+
+        {calibrationMessage && (
+          <div style={styles.noticeBox}>{calibrationMessage}</div>
+        )}
+      </section>
+
       <section style={targetLock ? styles.lockCard : styles.card}>
         <h2 style={styles.sectionTitle}>Precision Telescope</h2>
 
@@ -682,7 +713,9 @@ export default function App() {
                 <div style={styles.planTop}>
                   <strong>{item.label}</strong>
                   <span
-                    style={item.score >= 70 ? styles.ratingGood : styles.ratingWeak}
+                    style={
+                      item.score >= 70 ? styles.ratingGood : styles.ratingWeak
+                    }
                   >
                     {item.rating}
                   </span>
@@ -927,6 +960,19 @@ const styles: Record<string, CSSProperties> = {
     padding: "15px 18px",
     fontSize: 18,
     fontWeight: 900,
+  },
+  disabledButton: {
+    opacity: 0.45,
+  },
+  sunWarning: {
+    background: "rgba(255,90,90,0.14)",
+    color: "#ff7777",
+    border: "1px solid rgba(255,90,90,0.45)",
+    borderRadius: 12,
+    padding: 12,
+    fontWeight: 900,
+    marginTop: 14,
+    lineHeight: 1.4,
   },
   targetName: {
     textAlign: "center",
@@ -1236,17 +1282,4 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 800,
     marginTop: 12,
   },
-  disabledButton: {
-  opacity: 0.45,
-},
-sunWarning: {
-  background: "rgba(255,90,90,0.14)",
-  color: "#ff7777",
-  border: "1px solid rgba(255,90,90,0.45)",
-  borderRadius: 12,
-  padding: 12,
-  fontWeight: 900,
-  marginTop: 14,
-  lineHeight: 1.4,
-},
 };
