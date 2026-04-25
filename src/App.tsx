@@ -554,10 +554,6 @@ export default function App() {
     );
   }, [rows, selectedId]);
 
-  const selectedPlan = useMemo(() => {
-    return null as ObservationItem | null;
-  }, []);
-
   const isSolarTarget = selectedTarget?.id === "Sole";
   const isGuidanceDisabled =
     selectedTarget === null || isSolarTarget || !selectedTarget.guideAllowed;
