@@ -7,7 +7,7 @@ type SkyBody = {
   label: string;
 };
 
-type AimMode = "telescope" | "skyfinder" | "camera";
+type AimMode = "telescope" | "skyfinder" | "field" | "camera";
 
 type StatusKind = "good" | "medium" | "bad" | "solar";
 
@@ -172,12 +172,22 @@ function azimuthToCompass(azimuth: number | null): string {
 
 function altitudeBand(altitude: number | null): string {
   if (altitude === null || !Number.isFinite(altitude)) return "—";
-  if (altitude < 0) return "sotto l’orizzonte";
+  if (altitude < 0) return "sotto";
   if (altitude < 10) return "bassissima";
   if (altitude < 25) return "bassa";
   if (altitude < 45) return "media";
   if (altitude < 65) return "alta";
   return "molto alta";
+}
+
+function fieldAltitudeBand(altitude: number | null): string {
+  if (altitude === null || !Number.isFinite(altitude)) return "—";
+  if (altitude < 0) return "SOTTO";
+  if (altitude < 10) return "BASSISSIMA";
+  if (altitude < 25) return "BASSA";
+  if (altitude < 45) return "MEDIA";
+  if (altitude < 65) return "ALTA";
+  return "MOLTO ALTA";
 }
 
 function statusColorValue(kind: StatusKind | undefined): string {
@@ -235,6 +245,33 @@ function skyFinderTurnText(
   }
 
   return `Ruota verso sinistra di circa ${Math.abs(delta).toFixed(0)}°.`;
+}
+
+function fieldTurnShort(
+  target: BodyRow | null,
+  correctedHeading: number | null
+): string {
+  if (!target) return "TARGET NON DISPONIBILE";
+
+  if (!target.observableNow) {
+    return "NON CERCARLO ORA";
+  }
+
+  if (correctedHeading === null) {
+    return "ATTIVA BUSSOLA";
+  }
+
+  const delta = normalize180(target.azimuth - correctedHeading);
+
+  if (Math.abs(delta) <= 8) {
+    return "DIREZIONE OK";
+  }
+
+  if (delta > 0) {
+    return `DESTRA ${Math.abs(delta).toFixed(0)}°`;
+  }
+
+  return `SINISTRA ${Math.abs(delta).toFixed(0)}°`;
 }
 
 function analyzeObservability(
@@ -584,7 +621,7 @@ export default function App() {
 
   const [rows, setRows] = useState<BodyRow[]>([]);
   const [selectedId, setSelectedId] = useState("Luna");
-  const [aimMode, setAimMode] = useState<AimMode>("telescope");
+  const [aimMode, setAimMode] = useState<AimMode>("field");
 
   const [orientation, setOrientation] = useState<OrientationState>({
     enabled: false,
@@ -664,6 +701,10 @@ export default function App() {
 
   const skyFinderMessage = useMemo(() => {
     return skyFinderTurnText(selectedTarget, correctedHeading);
+  }, [selectedTarget, correctedHeading]);
+
+  const fieldMessage = useMemo(() => {
+    return fieldTurnShort(selectedTarget, correctedHeading);
   }, [selectedTarget, correctedHeading]);
 
   const deltaAz = useMemo(() => {
@@ -1053,6 +1094,7 @@ export default function App() {
   function aimModeTitle(mode: AimMode): string {
     if (mode === "telescope") return "Telescopio Push-To";
     if (mode === "skyfinder") return "Sky Finder";
+    if (mode === "field") return "Field Mode";
     return "Camera AR Preview";
   }
 
@@ -1065,6 +1107,10 @@ export default function App() {
       return "Per occhio nudo: la freccia blu indica dove punta il lato corto superiore dell’iPhone. Ruota il corpo/telefono finché la freccia si avvicina al target.";
     }
 
+    if (mode === "field") {
+      return "Schermata da campo: pochi dati, grandi, leggibili al buio. Target, direzione, altezza, freccia e finestra utile.";
+    }
+
     return "Camera solo preview. Il puntamento affidabile resta sul lato corto superiore dell’iPhone: la camera non è ancora un asse ottico calibrato.";
   }
 
@@ -1072,7 +1118,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.2 — Pointer Axis Clarity</p>
+        <p style={styles.subtitle}>V6.3 — Field Mode</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1088,10 +1134,12 @@ export default function App() {
         {gps.error && <p style={styles.error}>{gps.error}</p>}
       </section>
 
-      <section style={styles.axisCard}>
-        <div style={styles.axisTitle}>Regola fisica dello strumento</div>
-        <div style={styles.axisText}>{POINTER_AXIS}</div>
-      </section>
+      {aimMode !== "field" && (
+        <section style={styles.axisCard}>
+          <div style={styles.axisTitle}>Regola fisica dello strumento</div>
+          <div style={styles.axisText}>{POINTER_AXIS}</div>
+        </section>
+      )}
 
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>Modo puntamento</h2>
@@ -1120,6 +1168,16 @@ export default function App() {
           <button
             style={{
               ...styles.modeButton,
+              ...(aimMode === "field" ? styles.modeButtonActive : {}),
+            }}
+            onClick={() => setAimMode("field")}
+          >
+            Field Mode
+          </button>
+
+          <button
+            style={{
+              ...styles.modeButton,
               ...(aimMode === "camera" ? styles.modeButtonActive : {}),
             }}
             onClick={() => setAimMode("camera")}
@@ -1128,75 +1186,102 @@ export default function App() {
           </button>
         </div>
 
-        <div style={styles.modeInfoBox}>
-          <div style={styles.modeInfoTitle}>{aimModeTitle(aimMode)}</div>
-          <div style={styles.modeInfoText}>{aimModeDescription(aimMode)}</div>
-        </div>
+        {aimMode !== "field" && (
+          <div style={styles.modeInfoBox}>
+            <div style={styles.modeInfoTitle}>{aimModeTitle(aimMode)}</div>
+            <div style={styles.modeInfoText}>{aimModeDescription(aimMode)}</div>
+          </div>
+        )}
       </section>
 
       <section style={styles.card}>
         <h2 style={styles.sectionTitle}>Bussola + Calibrazione</h2>
 
-        <div style={styles.calibrationHint}>
-          Calibra tenendo il <strong>lato corto superiore dell’iPhone</strong>{" "}
-          puntato verso il target reale.
-        </div>
+        {aimMode !== "field" && (
+          <div style={styles.calibrationHint}>
+            Calibra tenendo il <strong>lato corto superiore dell’iPhone</strong>{" "}
+            puntato verso il target reale.
+          </div>
+        )}
 
-        <div style={styles.grid2}>
-          <Info label="Heading raw" value={formatDeg(orientation.rawHeading)} />
-          <Info
-            label="Heading smooth"
-            value={formatDeg(orientation.smoothHeading)}
-          />
-          <Info label="Offset calibrazione" value={formatDeg(offsetDeg)} />
-          <Info label="Heading corretto" value={formatDeg(correctedHeading)} />
-          <Info
-            label="Pitch stimato"
-            value={formatDeg(orientation.deviceAltitude)}
-          />
-          <Info
-            label="Beta/Gamma"
-            value={`${formatDeg(orientation.beta)} / ${formatDeg(
-              orientation.gamma
-            )}`}
-          />
-        </div>
+        {aimMode === "field" ? (
+          <div style={styles.fieldCompassRow}>
+            <button style={styles.primaryButton} onClick={enableCompass}>
+              Attiva bussola
+            </button>
+            <button style={styles.secondaryButton} onClick={resetCalibration}>
+              Reset
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={styles.grid2}>
+              <Info label="Heading raw" value={formatDeg(orientation.rawHeading)} />
+              <Info
+                label="Heading smooth"
+                value={formatDeg(orientation.smoothHeading)}
+              />
+              <Info label="Offset calibrazione" value={formatDeg(offsetDeg)} />
+              <Info label="Heading corretto" value={formatDeg(correctedHeading)} />
+              <Info
+                label="Pitch stimato"
+                value={formatDeg(orientation.deviceAltitude)}
+              />
+              <Info
+                label="Beta/Gamma"
+                value={`${formatDeg(orientation.beta)} / ${formatDeg(
+                  orientation.gamma
+                )}`}
+              />
+            </div>
+
+            <div style={styles.buttonRow}>
+              <button style={styles.primaryButton} onClick={enableCompass}>
+                Attiva bussola
+              </button>
+
+              <button
+                style={{
+                  ...styles.yellowButton,
+                  ...(!canCalibrateOnSelectedTarget ? styles.disabledButton : {}),
+                }}
+                onClick={calibrateOnSelectedTarget}
+                disabled={!canCalibrateOnSelectedTarget}
+              >
+                {calibrationButtonLabel}
+              </button>
+
+              <button style={styles.secondaryButton} onClick={resetCalibration}>
+                Reset calibrazione
+              </button>
+            </div>
+          </>
+        )}
 
         {orientation.error && <p style={styles.error}>{orientation.error}</p>}
 
-        <div style={styles.buttonRow}>
-          <button style={styles.primaryButton} onClick={enableCompass}>
-            Attiva bussola
-          </button>
-
-          <button
-            style={{
-              ...styles.yellowButton,
-              ...(!canCalibrateOnSelectedTarget ? styles.disabledButton : {}),
-            }}
-            onClick={calibrateOnSelectedTarget}
-            disabled={!canCalibrateOnSelectedTarget}
-          >
-            {calibrationButtonLabel}
-          </button>
-
-          <button style={styles.secondaryButton} onClick={resetCalibration}>
-            Reset calibrazione
-          </button>
-        </div>
-
-        {selectedTarget && isGuidanceDisabled && (
+        {selectedTarget && isGuidanceDisabled && aimMode !== "field" && (
           <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
             {guidanceDisabledReason}
           </div>
         )}
 
-        {calibrationMessage && (
+        {calibrationMessage && aimMode !== "field" && (
           <div style={styles.noticeBox}>{calibrationMessage}</div>
         )}
       </section>
 
-      {aimMode === "skyfinder" ? (
+      {aimMode === "field" ? (
+        <FieldModePanel
+          target={selectedTarget}
+          plan={currentSelectedPlan}
+          heading={correctedHeading}
+          fieldMessage={fieldMessage}
+          disabledReason={guidanceDisabledReason}
+          isSolarTarget={isSolarTarget}
+          onEnableCompass={enableCompass}
+        />
+      ) : aimMode === "skyfinder" ? (
         <section style={styles.skyFinderCard}>
           <h2 style={styles.sectionTitle}>Sky Finder Radar</h2>
 
@@ -1412,186 +1497,277 @@ export default function App() {
         </select>
       </section>
 
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Osservazione Pro</h2>
+      {aimMode !== "field" && (
+        <>
+          <section style={styles.card}>
+            <h2 style={styles.sectionTitle}>Osservazione Pro</h2>
 
-        <p style={styles.smallText}>
-          Migliori target nelle prossime {FORECAST_HOURS} ore. L’app indica
-          prima finestra utile, momento migliore e osservabilità reale.
-        </p>
-
-        {observationPlan.length === 0 ? (
-          <p style={styles.smallText}>Attendo GPS e dati astronomici...</p>
-        ) : (
-          <div style={styles.planList}>
-            {observationPlan.slice(0, 6).map((item) => (
-              <button
-                key={item.id}
-                style={{
-                  ...styles.planItem,
-                  ...(item.id === selectedId ? styles.selectedPlanItem : {}),
-                }}
-                onClick={() => setSelectedId(item.id)}
-              >
-                <div style={styles.planTop}>
-                  <strong>{item.label}</strong>
-                  <span style={statusStyle(item.statusKind)}>{item.rating}</span>
-                </div>
-
-                <div style={styles.planGrid}>
-                  <span>Ora: {item.currentLabel}</span>
-                  <span>Alt ora: {formatDeg(item.currentAltitude)}</span>
-                  <span>Prima utile: {item.firstUsefulTime ?? "—"}</span>
-                  <span>Migliore: {item.bestTime ?? "—"}</span>
-                  <span>Alt max: {item.bestAltitude.toFixed(1)}°</span>
-                  <span>Score: {item.score}/100</span>
-                </div>
-
-                <div style={styles.planAdvice}>{item.advice}</div>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section style={styles.tableCard}>
-        <div style={styles.tableHeader}>
-          <span>Corpo</span>
-          <span>Azimut</span>
-          <span>Altezza</span>
-          <span>Osservabilità</span>
-        </div>
-
-        {rows.map((row) => (
-          <button
-            key={row.id}
-            style={{
-              ...styles.tableRow,
-              ...(row.id === selectedId ? styles.selectedRow : {}),
-            }}
-            onClick={() => setSelectedId(row.id)}
-          >
-            <span>{row.label}</span>
-            <span>{row.azimuth.toFixed(1)}°</span>
-            <span>{row.altitude.toFixed(1)}°</span>
-            <span style={statusStyle(row.statusKind)}>
-              {row.observationLabel}
-            </span>
-          </button>
-        ))}
-      </section>
-
-      <section
-        style={
-          aimMode === "camera" && !isGuidanceDisabled
-            ? styles.arCard
-            : styles.disabledArCard
-        }
-      >
-        <h2 style={styles.sectionTitle}>Camera AR Preview</h2>
-
-        {aimMode !== "camera" ? (
-          <>
-            <p style={styles.solarText}>
-              Camera disattivata perché il modo attivo è{" "}
-              <strong>{aimModeTitle(aimMode)}</strong>.
-            </p>
-            <div style={styles.noticeBox}>
-              Passa a <strong>Camera AR</strong> per usare la preview video.
-            </div>
-          </>
-        ) : isGuidanceDisabled ? (
-          <>
-            <p style={styles.solarText}>
-              Camera AR disattivata per questo target.
-            </p>
-            <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
-              {guidanceDisabledReason}
-            </div>
-          </>
-        ) : (
-          <>
             <p style={styles.smallText}>
-              Camera posteriore + overlay indicativo. Nessun TARGET LOCK viene
-              dichiarato in questa modalità.
+              Migliori target nelle prossime {FORECAST_HOURS} ore. L’app indica
+              prima finestra utile, momento migliore e osservabilità reale.
             </p>
 
-            <div style={styles.noticeBox}>
-              Puntamento sempre riferito al{" "}
-              <strong>lato corto superiore dell’iPhone</strong>. La camera è
-              solo una preview.
-            </div>
+            {observationPlan.length === 0 ? (
+              <p style={styles.smallText}>Attendo GPS e dati astronomici...</p>
+            ) : (
+              <div style={styles.planList}>
+                {observationPlan.slice(0, 6).map((item) => (
+                  <button
+                    key={item.id}
+                    style={{
+                      ...styles.planItem,
+                      ...(item.id === selectedId ? styles.selectedPlanItem : {}),
+                    }}
+                    onClick={() => setSelectedId(item.id)}
+                  >
+                    <div style={styles.planTop}>
+                      <strong>{item.label}</strong>
+                      <span style={statusStyle(item.statusKind)}>
+                        {item.rating}
+                      </span>
+                    </div>
 
-            {isStandalone && (
-              <div style={styles.noticeBox}>
-                Modalità App iPhone rilevata. Se la camera non parte, apri Astro
-                Pons in Safari per preview camera completa.
+                    <div style={styles.planGrid}>
+                      <span>Ora: {item.currentLabel}</span>
+                      <span>Alt ora: {formatDeg(item.currentAltitude)}</span>
+                      <span>Prima utile: {item.firstUsefulTime ?? "—"}</span>
+                      <span>Migliore: {item.bestTime ?? "—"}</span>
+                      <span>Alt max: {item.bestAltitude.toFixed(1)}°</span>
+                      <span>Score: {item.score}/100</span>
+                    </div>
+
+                    <div style={styles.planAdvice}>{item.advice}</div>
+                  </button>
+                ))}
               </div>
             )}
+          </section>
 
-            <div style={styles.buttonRow}>
-              <button style={styles.primaryButton} onClick={startCamera}>
-                Avvia AR Camera
-              </button>
-              <button style={styles.secondaryButton} onClick={stopCamera}>
-                Stop Camera
-              </button>
+          <section style={styles.tableCard}>
+            <div style={styles.tableHeader}>
+              <span>Corpo</span>
+              <span>Azimut</span>
+              <span>Altezza</span>
+              <span>Osservabilità</span>
             </div>
 
-            {cameraError && <p style={styles.error}>{cameraError}</p>}
+            {rows.map((row) => (
+              <button
+                key={row.id}
+                style={{
+                  ...styles.tableRow,
+                  ...(row.id === selectedId ? styles.selectedRow : {}),
+                }}
+                onClick={() => setSelectedId(row.id)}
+              >
+                <span>{row.label}</span>
+                <span>{row.azimuth.toFixed(1)}°</span>
+                <span>{row.altitude.toFixed(1)}°</span>
+                <span style={statusStyle(row.statusKind)}>
+                  {row.observationLabel}
+                </span>
+              </button>
+            ))}
+          </section>
 
-            <div style={styles.arFrame}>
-              {cameraActive ? (
-                <video ref={videoRef} playsInline muted style={styles.arVideo} />
-              ) : (
-                <div style={styles.cameraPlaceholder}>Camera non attiva</div>
-              )}
+          <section
+            style={
+              aimMode === "camera" && !isGuidanceDisabled
+                ? styles.arCard
+                : styles.disabledArCard
+            }
+          >
+            <h2 style={styles.sectionTitle}>Camera AR Preview</h2>
 
-              <div style={styles.arOverlay}>
-                <div style={styles.reticle}>
-                  <div style={styles.reticleH} />
-                  <div style={styles.reticleV} />
+            {aimMode !== "camera" ? (
+              <>
+                <p style={styles.solarText}>
+                  Camera disattivata perché il modo attivo è{" "}
+                  <strong>{aimModeTitle(aimMode)}</strong>.
+                </p>
+                <div style={styles.noticeBox}>
+                  Passa a <strong>Camera AR</strong> per usare la preview video.
+                </div>
+              </>
+            ) : isGuidanceDisabled ? (
+              <>
+                <p style={styles.solarText}>
+                  Camera AR disattivata per questo target.
+                </p>
+                <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
+                  {guidanceDisabledReason}
+                </div>
+              </>
+            ) : (
+              <>
+                <p style={styles.smallText}>
+                  Camera posteriore + overlay indicativo. Nessun TARGET LOCK viene
+                  dichiarato in questa modalità.
+                </p>
+
+                <div style={styles.noticeBox}>
+                  Puntamento sempre riferito al{" "}
+                  <strong>lato corto superiore dell’iPhone</strong>. La camera è
+                  solo una preview.
                 </div>
 
-                {arMarker && (
-                  <div
-                    style={{
-                      ...styles.marker,
-                      ...(arMarker.inside ? {} : styles.markerOffscreen),
-                      left: `${arMarker.x}%`,
-                      top: `${arMarker.y}%`,
-                    }}
-                  >
-                    <div style={styles.markerDot} />
-                    <div style={styles.markerLabel}>
-                      {selectedTarget?.label ?? "Target"}
-                    </div>
+                {isStandalone && (
+                  <div style={styles.noticeBox}>
+                    Modalità App iPhone rilevata. Se la camera non parte, apri
+                    Astro Pons in Safari per preview camera completa.
                   </div>
                 )}
 
-                <div style={styles.arInstruction}>
-                  <span style={styles.arPreviewText}>Preview indicativa</span>
-                  <span>Asse camera non calibrato</span>
-                  <span>Punta reale: lato superiore iPhone</span>
+                <div style={styles.buttonRow}>
+                  <button style={styles.primaryButton} onClick={startCamera}>
+                    Avvia AR Camera
+                  </button>
+                  <button style={styles.secondaryButton} onClick={stopCamera}>
+                    Stop Camera
+                  </button>
                 </div>
-              </div>
-            </div>
 
-            <div style={styles.arInfoGrid}>
-              <div style={styles.arMiniMetric}>
-                Delta Az indicativo {formatDeg(deltaAz)}
-              </div>
-              <div style={styles.arMiniMetric}>
-                Delta Alt indicativo {formatDeg(deltaAlt)}
-              </div>
-              <div style={styles.arMiniMetric}>
-                Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
-              </div>
-            </div>
-          </>
-        )}
-      </section>
+                {cameraError && <p style={styles.error}>{cameraError}</p>}
+
+                <div style={styles.arFrame}>
+                  {cameraActive ? (
+                    <video
+                      ref={videoRef}
+                      playsInline
+                      muted
+                      style={styles.arVideo}
+                    />
+                  ) : (
+                    <div style={styles.cameraPlaceholder}>Camera non attiva</div>
+                  )}
+
+                  <div style={styles.arOverlay}>
+                    <div style={styles.reticle}>
+                      <div style={styles.reticleH} />
+                      <div style={styles.reticleV} />
+                    </div>
+
+                    {arMarker && (
+                      <div
+                        style={{
+                          ...styles.marker,
+                          ...(arMarker.inside ? {} : styles.markerOffscreen),
+                          left: `${arMarker.x}%`,
+                          top: `${arMarker.y}%`,
+                        }}
+                      >
+                        <div style={styles.markerDot} />
+                        <div style={styles.markerLabel}>
+                          {selectedTarget?.label ?? "Target"}
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={styles.arInstruction}>
+                      <span style={styles.arPreviewText}>Preview indicativa</span>
+                      <span>Asse camera non calibrato</span>
+                      <span>Punta reale: lato superiore iPhone</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.arInfoGrid}>
+                  <div style={styles.arMiniMetric}>
+                    Delta Az indicativo {formatDeg(deltaAz)}
+                  </div>
+                  <div style={styles.arMiniMetric}>
+                    Delta Alt indicativo {formatDeg(deltaAlt)}
+                  </div>
+                  <div style={styles.arMiniMetric}>
+                    Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
+        </>
+      )}
     </main>
+  );
+}
+
+function FieldModePanel({
+  target,
+  plan,
+  heading,
+  fieldMessage,
+  disabledReason,
+  isSolarTarget,
+  onEnableCompass,
+}: {
+  target: BodyRow | null;
+  plan: ObservationItem | null;
+  heading: number | null;
+  fieldMessage: string;
+  disabledReason: string | null;
+  isSolarTarget: boolean;
+  onEnableCompass: () => void;
+}) {
+  const color = statusColorValue(target?.statusKind);
+  const observable = target?.observableNow ?? false;
+
+  return (
+    <section style={styles.fieldCard}>
+      <div style={styles.fieldHeader}>FIELD MODE</div>
+
+      <div style={styles.fieldTarget}>{target?.label?.toUpperCase() ?? "—"}</div>
+
+      <div style={{ ...styles.fieldStatus, color }}>
+        {target?.observationLabel?.toUpperCase() ?? "—"}
+      </div>
+
+      <FieldRadar target={target} heading={heading} />
+
+      <div style={styles.fieldMainGrid}>
+        <div style={styles.fieldBigBox}>
+          <span>GUARDA</span>
+          <strong>{azimuthToCompass(target?.azimuth ?? null).toUpperCase()}</strong>
+        </div>
+
+        <div style={styles.fieldBigBox}>
+          <span>ALTEZZA</span>
+          <strong>{fieldAltitudeBand(target?.altitude ?? null)}</strong>
+        </div>
+      </div>
+
+      <div style={observable ? styles.fieldInstructionGood : styles.fieldInstructionBad}>
+        {fieldMessage}
+      </div>
+
+      <div style={styles.fieldTimeGrid}>
+        <div>
+          <span>ORA</span>
+          <strong>{target?.observableNow ? "SÌ" : "NO"}</strong>
+        </div>
+        <div>
+          <span>PRIMA UTILE</span>
+          <strong>{plan?.firstUsefulTime ?? "—"}</strong>
+        </div>
+        <div>
+          <span>MIGLIORE</span>
+          <strong>{plan?.bestTime ?? "—"}</strong>
+        </div>
+      </div>
+
+      {disabledReason && (
+        <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
+          {disabledReason}
+        </div>
+      )}
+
+      <button style={styles.fieldCompassButton} onClick={onEnableCompass}>
+        ATTIVA / RIATTIVA BUSSOLA
+      </button>
+
+      <div style={styles.fieldAxis}>
+        Freccia blu = lato corto superiore dell’iPhone
+      </div>
+    </section>
   );
 }
 
@@ -1673,6 +1849,70 @@ function SkyRadar({
           <strong>Bordo</strong> = basso/orizzonte
         </span>
       </div>
+    </div>
+  );
+}
+
+function FieldRadar({
+  target,
+  heading,
+}: {
+  target: BodyRow | null;
+  heading: number | null;
+}) {
+  const point = radarPointFromAzAlt(
+    target?.azimuth ?? null,
+    target?.altitude ?? null
+  );
+
+  const color = statusColorValue(target?.statusKind);
+
+  return (
+    <div style={styles.fieldRadar}>
+      <div style={styles.fieldRadarRingOuter} />
+      <div style={styles.fieldRadarRingMid} />
+      <div style={styles.fieldRadarRingInner} />
+
+      <div style={styles.fieldRadarAxisVertical} />
+      <div style={styles.fieldRadarAxisHorizontal} />
+
+      <div style={styles.fieldRadarN}>N</div>
+      <div style={styles.fieldRadarE}>E</div>
+      <div style={styles.fieldRadarS}>S</div>
+      <div style={styles.fieldRadarW}>O</div>
+
+      {heading !== null && (
+        <div
+          style={{
+            ...styles.fieldRadarHeading,
+            transform: `translate(-50%, -100%) rotate(${heading}deg)`,
+          }}
+        />
+      )}
+
+      {point && target && (
+        <>
+          <div
+            style={{
+              ...styles.fieldRadarDot,
+              left: `${point.x}%`,
+              top: `${point.y}%`,
+              background: color,
+              boxShadow: `0 0 30px ${color}`,
+            }}
+          />
+          <div
+            style={{
+              ...styles.fieldRadarLabel,
+              left: `${point.x}%`,
+              top: `${point.y}%`,
+              color,
+            }}
+          >
+            {target.label}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1839,6 +2079,11 @@ const styles: Record<string, CSSProperties> = {
     textAlign: "center",
     lineHeight: 1.35,
     marginBottom: 14,
+  },
+  fieldCompassRow: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 12,
   },
   skyFinderCard: {
     background: "#101d2d",
@@ -2025,6 +2270,210 @@ const styles: Record<string, CSSProperties> = {
     color: "#a9adbd",
     fontSize: 13,
     textAlign: "center",
+  },
+  fieldCard: {
+    background: "#050b18",
+    border: "2px solid rgba(0,183,255,0.65)",
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 18,
+    boxShadow: "0 0 34px rgba(0,183,255,0.14)",
+  },
+  fieldHeader: {
+    color: "#00b7ff",
+    textAlign: "center",
+    fontSize: 18,
+    fontWeight: 1000,
+    letterSpacing: 2,
+    marginBottom: 8,
+  },
+  fieldTarget: {
+    color: "#ffffff",
+    textAlign: "center",
+    fontSize: 50,
+    lineHeight: 1,
+    fontWeight: 1000,
+    marginBottom: 8,
+  },
+  fieldStatus: {
+    textAlign: "center",
+    fontSize: 26,
+    fontWeight: 1000,
+    marginBottom: 14,
+  },
+  fieldRadar: {
+    position: "relative",
+    width: "min(100%, 360px)",
+    aspectRatio: "1 / 1",
+    margin: "0 auto 16px",
+    borderRadius: "50%",
+    background:
+      "radial-gradient(circle at center, rgba(0,183,255,0.20), rgba(5,8,31,0.94) 63%, rgba(5,8,31,1))",
+    border: "2px solid rgba(0,183,255,0.75)",
+    overflow: "hidden",
+    boxShadow: "0 0 30px rgba(0,183,255,0.20)",
+  },
+  fieldRadarRingOuter: {
+    position: "absolute",
+    inset: "7%",
+    borderRadius: "50%",
+    border: "2px solid rgba(255,255,255,0.25)",
+  },
+  fieldRadarRingMid: {
+    position: "absolute",
+    inset: "28%",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.18)",
+  },
+  fieldRadarRingInner: {
+    position: "absolute",
+    inset: "44%",
+    borderRadius: "50%",
+    border: "1px solid rgba(255,255,255,0.14)",
+  },
+  fieldRadarAxisVertical: {
+    position: "absolute",
+    left: "50%",
+    top: "7%",
+    bottom: "7%",
+    width: 1,
+    background: "rgba(255,255,255,0.2)",
+  },
+  fieldRadarAxisHorizontal: {
+    position: "absolute",
+    top: "50%",
+    left: "7%",
+    right: "7%",
+    height: 1,
+    background: "rgba(255,255,255,0.2)",
+  },
+  fieldRadarN: {
+    position: "absolute",
+    top: 8,
+    left: "50%",
+    transform: "translateX(-50%)",
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: 1000,
+  },
+  fieldRadarE: {
+    position: "absolute",
+    right: 10,
+    top: "50%",
+    transform: "translateY(-50%)",
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: 1000,
+  },
+  fieldRadarS: {
+    position: "absolute",
+    bottom: 8,
+    left: "50%",
+    transform: "translateX(-50%)",
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: 1000,
+  },
+  fieldRadarW: {
+    position: "absolute",
+    left: 10,
+    top: "50%",
+    transform: "translateY(-50%)",
+    color: "#ffffff",
+    fontSize: 20,
+    fontWeight: 1000,
+  },
+  fieldRadarHeading: {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: 6,
+    height: "43%",
+    transformOrigin: "50% 100%",
+    background: "#00b7ff",
+    borderRadius: 999,
+    boxShadow: "0 0 22px rgba(0,183,255,0.95)",
+  },
+  fieldRadarDot: {
+    position: "absolute",
+    width: 32,
+    height: 32,
+    borderRadius: "50%",
+    transform: "translate(-50%, -50%)",
+    border: "4px solid rgba(255,255,255,0.96)",
+    zIndex: 5,
+  },
+  fieldRadarLabel: {
+    position: "absolute",
+    transform: "translate(-50%, 22px)",
+    fontSize: 18,
+    fontWeight: 1000,
+    textShadow: "0 2px 10px rgba(0,0,0,1)",
+    zIndex: 6,
+  },
+  fieldMainGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 12,
+    marginBottom: 12,
+  },
+  fieldBigBox: {
+    background: "#11162c",
+    borderRadius: 16,
+    padding: 16,
+    textAlign: "center",
+    display: "grid",
+    gap: 6,
+  },
+  fieldInstructionGood: {
+    background: "rgba(21,255,49,0.12)",
+    color: "#15ff31",
+    border: "1px solid rgba(21,255,49,0.35)",
+    borderRadius: 16,
+    padding: 16,
+    fontSize: 30,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  fieldInstructionBad: {
+    background: "rgba(255,102,102,0.12)",
+    color: "#ff6666",
+    border: "1px solid rgba(255,102,102,0.35)",
+    borderRadius: 16,
+    padding: 16,
+    fontSize: 28,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  fieldTimeGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 10,
+    marginBottom: 12,
+  },
+  fieldCompassButton: {
+    width: "100%",
+    background: "#00b7ff",
+    color: "#00111a",
+    border: 0,
+    borderRadius: 14,
+    padding: "16px 14px",
+    fontSize: 18,
+    fontWeight: 1000,
+    marginTop: 8,
+  },
+  fieldAxis: {
+    background: "rgba(0,183,255,0.10)",
+    color: "#00b7ff",
+    border: "1px solid rgba(0,183,255,0.35)",
+    borderRadius: 14,
+    padding: 12,
+    fontSize: 16,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginTop: 12,
   },
   solarSafeCard: {
     background: "#21192c",
