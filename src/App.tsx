@@ -1118,7 +1118,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.3 — Field Mode</p>
+        <p style={styles.subtitle}>V6.3.1 — Field Mode Polish</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1711,6 +1711,12 @@ function FieldModePanel({
   const color = statusColorValue(target?.statusKind);
   const observable = target?.observableNow ?? false;
 
+  const fieldStatusText = isSolarTarget
+    ? "SOLAR SAFE"
+    : observable
+      ? "OSSERVABILE"
+      : target?.observationLabel?.toUpperCase() ?? "—";
+
   return (
     <section style={styles.fieldCard}>
       <div style={styles.fieldHeader}>FIELD MODE</div>
@@ -1718,7 +1724,7 @@ function FieldModePanel({
       <div style={styles.fieldTarget}>{target?.label?.toUpperCase() ?? "—"}</div>
 
       <div style={{ ...styles.fieldStatus, color }}>
-        {target?.observationLabel?.toUpperCase() ?? "—"}
+        {fieldStatusText}
       </div>
 
       <FieldRadar target={target} heading={heading} />
@@ -1740,17 +1746,25 @@ function FieldModePanel({
       </div>
 
       <div style={styles.fieldTimeGrid}>
-        <div>
-          <span>ORA</span>
-          <strong>{target?.observableNow ? "SÌ" : "NO"}</strong>
+        <div style={styles.fieldTimeBox}>
+          <span style={styles.fieldTimeLabel}>ORA</span>
+          <strong style={styles.fieldTimeValue}>
+            {target?.observableNow ? "SÌ" : "NO"}
+          </strong>
         </div>
-        <div>
-          <span>PRIMA UTILE</span>
-          <strong>{plan?.firstUsefulTime ?? "—"}</strong>
+
+        <div style={styles.fieldTimeBox}>
+          <span style={styles.fieldTimeLabel}>PRIMA UTILE</span>
+          <strong style={styles.fieldTimeValue}>
+            {plan?.firstUsefulTime ?? "—"}
+          </strong>
         </div>
-        <div>
-          <span>MIGLIORE</span>
-          <strong>{plan?.bestTime ?? "—"}</strong>
+
+        <div style={styles.fieldTimeBox}>
+          <span style={styles.fieldTimeLabel}>MIGLIORE</span>
+          <strong style={styles.fieldTimeValue}>
+            {plan?.bestTime ?? "—"}
+          </strong>
         </div>
       </div>
 
@@ -2452,6 +2466,25 @@ const styles: Record<string, CSSProperties> = {
     gridTemplateColumns: "1fr",
     gap: 10,
     marginBottom: 12,
+  },
+  fieldTimeBox: {
+    background: "#11162c",
+    borderRadius: 14,
+    padding: 14,
+    display: "grid",
+    gap: 6,
+    textAlign: "center",
+  },
+  fieldTimeLabel: {
+    color: "#a9adbd",
+    fontSize: 15,
+    fontWeight: 1000,
+    letterSpacing: 1,
+  },
+  fieldTimeValue: {
+    color: "#ffffff",
+    fontSize: 24,
+    fontWeight: 1000,
   },
   fieldCompassButton: {
     width: "100%",
