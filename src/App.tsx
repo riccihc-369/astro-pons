@@ -68,6 +68,34 @@ type RadarPoint = {
 };
 
 const OFFSET_KEY = "astroPons.compassOffsetDeg";
+const AIM_MODE_KEY = "astroPons.aimMode";
+const SELECTED_TARGET_KEY = "astroPons.selectedTarget";
+
+function isAimMode(value: string | null): value is AimMode {
+  return (
+    value === "telescope" ||
+    value === "skyfinder" ||
+    value === "field" ||
+    value === "camera"
+  );
+}
+
+function readStoredAimMode(): AimMode {
+  try {
+    const saved = localStorage.getItem(AIM_MODE_KEY);
+    return isAimMode(saved) ? saved : "field";
+  } catch {
+    return "field";
+  }
+}
+
+function readStoredSelectedTarget(): string {
+  try {
+    return localStorage.getItem(SELECTED_TARGET_KEY) || "Luna";
+  } catch {
+    return "Luna";
+  }
+}
 const FORECAST_HOURS = 12;
 const FORECAST_STEP_MINUTES = 15;
 
@@ -620,8 +648,13 @@ export default function App() {
   });
 
   const [rows, setRows] = useState<BodyRow[]>([]);
-  const [selectedId, setSelectedId] = useState("Luna");
-  const [aimMode, setAimMode] = useState<AimMode>("field");
+  const [selectedId, setSelectedId] = useState<string>(() =>
+  readStoredSelectedTarget()
+);
+
+const [aimMode, setAimMode] = useState<AimMode>(() =>
+  readStoredAimMode()
+);
 
   const [orientation, setOrientation] = useState<OrientationState>({
     enabled: false,
@@ -779,7 +812,31 @@ export default function App() {
 
     setIsStandalone(standalone);
   }, []);
+useEffect(() => {
+  try {
+    localStorage.setItem(AIM_MODE_KEY, aimMode);
+  } catch {
+    // Ignora errori localStorage.
+  }
+}, [aimMode]);
 
+useEffect(() => {
+  try {
+    localStorage.setItem(SELECTED_TARGET_KEY, selectedId);
+  } catch {
+    // Ignora errori localStorage.
+  }
+}, [selectedId]);
+
+useEffect(() => {
+  if (rows.length === 0) return;
+
+  const targetExists = rows.some((row) => row.id === selectedId);
+
+  if (!targetExists) {
+    setSelectedId("Luna");
+  }
+}, [rows, selectedId]);
   useEffect(() => {
     if (!navigator.geolocation) {
       setGps((prev) => ({
@@ -1118,7 +1175,7 @@ export default function App() {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.3.1 — Field Mode Polish</p>
+        <p style={styles.subtitle}>V6.4 — Persisted Field Preferences</p>
       </section>
 
       <section style={styles.statusCard}>
