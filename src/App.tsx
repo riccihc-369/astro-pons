@@ -2,3052 +2,2245 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Body, Equator, Horizon, Observer } from "astronomy-engine";
 
-type SkyBody = {
-  body: Body;
+type SkyKind = "body" | "star" | "dso";
+
+type Difficulty = "facile" | "media" | "difficile";
+
+type SkyObject = {
+  kind: SkyKind;
   label: string;
+  group: string;
+  body?: Body;
+  raHours?: number;
+  decDeg?: number;
+  priority: number;
+  mag?: number;
+  catalog?: string;
+  difficulty?: Difficulty;
+  recommendedTool?: string;
+  bestMonths?: number[];
+  minUsefulAltitude?: number;
+  requiredSunAltitude?: number;
+  note?: string;
 };
 
-type AimMode = "telescope" | "skyfinder" | "field" | "camera";
-
-type StatusKind = "good" | "medium" | "bad" | "solar";
-
-type Observability = {
-  observationLabel: string;
-  observationScore: number;
-  observationReason: string;
-  observableNow: boolean;
-  guideAllowed: boolean;
-  calibrationAllowed: boolean;
-  statusKind: StatusKind;
-};
-
-type BodyRow = {
-  id: string;
-  label: string;
-  azimuth: number;
+type AltAz = {
   altitude: number;
+  azimuth: number;
+};
+
+type SkyResult = SkyObject & {
+  altitude: number;
+  azimuth: number;
+  deltaFromHeading: number | null;
+  absDeltaFromHeading: number | null;
   visible: boolean;
-} & Observability;
-
-type GpsState = {
-  lat: number | null;
-  lon: number | null;
-  accuracy: number | null;
-  error: string | null;
+  qualityLabel: string;
+  qualityScore: number;
 };
 
-type OrientationState = {
-  enabled: boolean;
-  rawHeading: number | null;
-  smoothHeading: number | null;
-  beta: number | null;
-  gamma: number | null;
-  deviceAltitude: number | null;
-  error: string | null;
-};
+type CompassMode =
+  | "off"
+  | "ios-webkit"
+  | "absolute"
+  | "relative"
+  | "unavailable"
+  | "denied";
 
-type ObservationItem = {
-  id: string;
-  label: string;
-  currentLabel: string;
-  currentReason: string;
-  currentAltitude: number | null;
-  firstUsefulTime: string | null;
-  bestTime: string | null;
-  bestAltitude: number;
+type CalibrationState = {
   score: number;
-  rating: string;
-  advice: string;
-  statusKind: StatusKind;
-  hasUsefulWindow: boolean;
+  label: string;
+  detail: string;
+  reliable: boolean;
+  warning: string | null;
 };
 
-type RadarPoint = {
-  x: number;
-  y: number;
+type HeadingSample = {
+  t: number;
+  heading: number;
 };
 
-const OFFSET_KEY = "astroPons.compassOffsetDeg";
-const AIM_MODE_KEY = "astroPons.aimMode";
-const SELECTED_TARGET_KEY = "astroPons.selectedTarget";
+type AdvisorSample = {
+  date: Date;
+  altitude: number;
+  azimuth: number;
+  sunAltitude: number;
+  usable: boolean;
+};
 
-const FORECAST_HOURS = 12;
-const FORECAST_STEP_MINUTES = 15;
+type AdvisorWindow = {
+  start: Date;
+  end: Date;
+  minutes: number;
+};
 
-const POINTER_AXIS =
-  "Asse di puntamento affidabile = lato corto superiore dell’iPhone.";
+type VisibilityAdvice = SkyObject & {
+  currentAltitude: number;
+  currentAzimuth: number;
+  bestTime: Date;
+  bestAltitude: number;
+  bestAzimuth: number;
+  usefulWindows: AdvisorWindow[];
+  usefulMinutes: number;
+  status: "Ora" | "Più tardi" | "Basso" | "Non consigliato" | "Sole";
+  reason: string;
+  advisorScore: number;
+  isCurrentlyUseful: boolean;
+  seasonLabel: string;
+};
 
-const SKY_BODIES: SkyBody[] = [
-  { body: Body.Sun, label: "Sole" },
-  { body: Body.Moon, label: "Luna" },
-  { body: Body.Mercury, label: "Mercurio" },
-  { body: Body.Venus, label: "Venere" },
-  { body: Body.Mars, label: "Marte" },
-  { body: Body.Jupiter, label: "Giove" },
-  { body: Body.Saturn, label: "Saturno" },
+const ADVISOR_SCAN_HOURS = 18;
+const ADVISOR_STEP_MINUTES = 15;
+
+const SKY_OBJECTS: SkyObject[] = [
+  {
+    kind: "body",
+    body: Body.Sun,
+    label: "Sole",
+    group: "Sistema solare",
+    priority: 40,
+  },
+  {
+    kind: "body",
+    body: Body.Moon,
+    label: "Luna",
+    group: "Sistema solare",
+    priority: 100,
+  },
+  {
+    kind: "body",
+    body: Body.Mercury,
+    label: "Mercurio",
+    group: "Pianeti",
+    priority: 62,
+  },
+  {
+    kind: "body",
+    body: Body.Venus,
+    label: "Venere",
+    group: "Pianeti",
+    priority: 98,
+  },
+  {
+    kind: "body",
+    body: Body.Mars,
+    label: "Marte",
+    group: "Pianeti",
+    priority: 86,
+  },
+  {
+    kind: "body",
+    body: Body.Jupiter,
+    label: "Giove",
+    group: "Pianeti",
+    priority: 94,
+  },
+  {
+    kind: "body",
+    body: Body.Saturn,
+    label: "Saturno",
+    group: "Pianeti",
+    priority: 88,
+  },
+  {
+    kind: "body",
+    body: Body.Uranus,
+    label: "Urano",
+    group: "Pianeti",
+    priority: 50,
+  },
+  {
+    kind: "body",
+    body: Body.Neptune,
+    label: "Nettuno",
+    group: "Pianeti",
+    priority: 48,
+  },
+
+  {
+    kind: "star",
+    label: "Polare",
+    group: "Stelle guida",
+    raHours: 2.5303,
+    decDeg: 89.2641,
+    priority: 88,
+    mag: 2.0,
+  },
+  {
+    kind: "star",
+    label: "Sirio",
+    group: "Stelle luminose",
+    raHours: 6.7525,
+    decDeg: -16.7161,
+    priority: 93,
+    mag: -1.46,
+  },
+  {
+    kind: "star",
+    label: "Vega",
+    group: "Stelle luminose",
+    raHours: 18.6156,
+    decDeg: 38.7837,
+    priority: 90,
+    mag: 0.03,
+  },
+  {
+    kind: "star",
+    label: "Arturo",
+    group: "Stelle luminose",
+    raHours: 14.261,
+    decDeg: 19.1825,
+    priority: 88,
+    mag: -0.05,
+  },
+  {
+    kind: "star",
+    label: "Capella",
+    group: "Stelle luminose",
+    raHours: 5.2782,
+    decDeg: 45.998,
+    priority: 84,
+    mag: 0.08,
+  },
+  {
+    kind: "star",
+    label: "Rigel",
+    group: "Stelle luminose",
+    raHours: 5.2423,
+    decDeg: -8.2016,
+    priority: 81,
+    mag: 0.13,
+  },
+  {
+    kind: "star",
+    label: "Betelgeuse",
+    group: "Stelle luminose",
+    raHours: 5.9195,
+    decDeg: 7.4071,
+    priority: 82,
+    mag: 0.5,
+  },
+  {
+    kind: "star",
+    label: "Aldebaran",
+    group: "Stelle luminose",
+    raHours: 4.5987,
+    decDeg: 16.5093,
+    priority: 76,
+    mag: 0.85,
+  },
+  {
+    kind: "star",
+    label: "Altair",
+    group: "Stelle luminose",
+    raHours: 19.8464,
+    decDeg: 8.8683,
+    priority: 78,
+    mag: 0.77,
+  },
+  {
+    kind: "star",
+    label: "Deneb",
+    group: "Stelle luminose",
+    raHours: 20.6905,
+    decDeg: 45.2803,
+    priority: 77,
+    mag: 1.25,
+  },
+  {
+    kind: "star",
+    label: "Antares",
+    group: "Stelle luminose",
+    raHours: 16.4901,
+    decDeg: -26.432,
+    priority: 75,
+    mag: 1.06,
+  },
+
+  {
+    kind: "dso",
+    label: "Galassia di Andromeda",
+    catalog: "M31",
+    group: "Deep Sky · Galassie",
+    raHours: 0.7123,
+    decDeg: 41.269,
+    priority: 98,
+    mag: 3.4,
+    difficulty: "facile",
+    recommendedTool: "occhio nudo / binocolo",
+    bestMonths: [9, 10, 11, 12],
+    minUsefulAltitude: 25,
+    requiredSunAltitude: -10,
+    note: "Grande e diffusa: meglio cielo buio, binocolo ideale.",
+  },
+  {
+    kind: "dso",
+    label: "Pleiadi",
+    catalog: "M45",
+    group: "Deep Sky · Ammassi aperti",
+    raHours: 3.79,
+    decDeg: 24.1167,
+    priority: 99,
+    mag: 1.6,
+    difficulty: "facile",
+    recommendedTool: "occhio nudo / binocolo",
+    bestMonths: [11, 12, 1, 2, 3],
+    minUsefulAltitude: 20,
+    requiredSunAltitude: -6,
+    note: "Uno degli oggetti più facili: ottimo anche a occhio nudo.",
+  },
+  {
+    kind: "dso",
+    label: "Nebulosa di Orione",
+    catalog: "M42",
+    group: "Deep Sky · Nebulose",
+    raHours: 5.591,
+    decDeg: -5.45,
+    priority: 97,
+    mag: 4.0,
+    difficulty: "facile",
+    recommendedTool: "binocolo / piccolo telescopio",
+    bestMonths: [12, 1, 2, 3],
+    minUsefulAltitude: 20,
+    requiredSunAltitude: -8,
+    note: "Molto riconoscibile nella spada di Orione.",
+  },
+  {
+    kind: "dso",
+    label: "Presepe",
+    catalog: "M44",
+    group: "Deep Sky · Ammassi aperti",
+    raHours: 8.67,
+    decDeg: 19.67,
+    priority: 88,
+    mag: 3.7,
+    difficulty: "facile",
+    recommendedTool: "binocolo",
+    bestMonths: [2, 3, 4, 5],
+    minUsefulAltitude: 25,
+    requiredSunAltitude: -8,
+    note: "Ammasso largo: il binocolo è spesso meglio del telescopio.",
+  },
+  {
+    kind: "dso",
+    label: "Doppio Ammasso",
+    catalog: "NGC 869/884",
+    group: "Deep Sky · Ammassi aperti",
+    raHours: 2.333,
+    decDeg: 57.13,
+    priority: 90,
+    mag: 4.3,
+    difficulty: "facile",
+    recommendedTool: "binocolo / telescopio basso ingrandimento",
+    bestMonths: [9, 10, 11, 12, 1],
+    minUsefulAltitude: 25,
+    requiredSunAltitude: -8,
+    note: "Bellissimo in binocolo; molto alto alle nostre latitudini.",
+  },
+  {
+    kind: "dso",
+    label: "Ammasso di Ercole",
+    catalog: "M13",
+    group: "Deep Sky · Ammassi globulari",
+    raHours: 16.695,
+    decDeg: 36.46,
+    priority: 84,
+    mag: 5.8,
+    difficulty: "media",
+    recommendedTool: "binocolo / telescopio",
+    bestMonths: [5, 6, 7, 8],
+    minUsefulAltitude: 30,
+    requiredSunAltitude: -10,
+    note: "A occhio nudo solo con cielo molto buio; meglio telescopio.",
+  },
+  {
+    kind: "dso",
+    label: "Nebulosa Anello",
+    catalog: "M57",
+    group: "Deep Sky · Nebulose planetarie",
+    raHours: 18.893,
+    decDeg: 33.03,
+    priority: 74,
+    mag: 8.8,
+    difficulty: "media",
+    recommendedTool: "telescopio",
+    bestMonths: [6, 7, 8, 9],
+    minUsefulAltitude: 35,
+    requiredSunAltitude: -12,
+    note: "Piccola: richiede telescopio e buon puntamento.",
+  },
+  {
+    kind: "dso",
+    label: "Galassia Triangolo",
+    catalog: "M33",
+    group: "Deep Sky · Galassie",
+    raHours: 1.564,
+    decDeg: 30.66,
+    priority: 72,
+    mag: 5.7,
+    difficulty: "difficile",
+    recommendedTool: "binocolo + cielo buio",
+    bestMonths: [10, 11, 12],
+    minUsefulAltitude: 30,
+    requiredSunAltitude: -12,
+    note: "Estesa ma debole: soffre molto l’inquinamento luminoso.",
+  },
+  {
+    kind: "dso",
+    label: "Nebulosa Laguna",
+    catalog: "M8",
+    group: "Deep Sky · Nebulose",
+    raHours: 18.061,
+    decDeg: -24.38,
+    priority: 70,
+    mag: 6.0,
+    difficulty: "media",
+    recommendedTool: "binocolo / telescopio",
+    bestMonths: [6, 7, 8],
+    minUsefulAltitude: 15,
+    requiredSunAltitude: -10,
+    note: "Bassa dalla Svizzera: serve orizzonte sud libero.",
+  },
+  {
+    kind: "dso",
+    label: "Ammasso Anatra Selvatica",
+    catalog: "M11",
+    group: "Deep Sky · Ammassi aperti",
+    raHours: 18.851,
+    decDeg: -6.27,
+    priority: 76,
+    mag: 6.3,
+    difficulty: "media",
+    recommendedTool: "binocolo / telescopio",
+    bestMonths: [7, 8, 9],
+    minUsefulAltitude: 20,
+    requiredSunAltitude: -10,
+    note: "Compatto e ricco; bello con piccolo telescopio.",
+  },
+  {
+    kind: "dso",
+    label: "Nebulosa Nord America",
+    catalog: "NGC 7000",
+    group: "Deep Sky · Nebulose",
+    raHours: 20.979,
+    decDeg: 44.33,
+    priority: 68,
+    mag: 4.0,
+    difficulty: "difficile",
+    recommendedTool: "cielo buio / binocolo largo campo",
+    bestMonths: [7, 8, 9, 10],
+    minUsefulAltitude: 35,
+    requiredSunAltitude: -12,
+    note: "Grande ma molto diffusa: difficile senza cielo scuro.",
+  },
 ];
 
-function isAimMode(value: string | null): value is AimMode {
-  return (
-    value === "telescope" ||
-    value === "skyfinder" ||
-    value === "field" ||
-    value === "camera"
-  );
+const fmt = (n: number, d = 1) => n.toFixed(d);
+
+function normalizeDeg(deg: number): number {
+  return ((deg % 360) + 360) % 360;
 }
 
-function readStoredAimMode(): AimMode {
-  try {
-    const saved = localStorage.getItem(AIM_MODE_KEY);
-    return isAimMode(saved) ? saved : "field";
-  } catch {
-    return "field";
-  }
+function signedAngularDelta(targetAzimuth: number, heading: number): number {
+  const delta = normalizeDeg(targetAzimuth - heading);
+  return delta > 180 ? delta - 360 : delta;
 }
 
-function readStoredSelectedTarget(): string {
-  try {
-    return localStorage.getItem(SELECTED_TARGET_KEY) || "Luna";
-  } catch {
-    return "Luna";
-  }
+function absAngularDelta(a: number, b: number): number {
+  return Math.abs(signedAngularDelta(a, b));
 }
 
-function normalize360(value: number): number {
-  return ((value % 360) + 360) % 360;
+function addMinutes(date: Date, minutes: number): Date {
+  return new Date(date.getTime() + minutes * 60_000);
 }
 
-function normalize180(value: number): number {
-  const normalized = normalize360(value);
-  return normalized > 180 ? normalized - 360 : normalized;
+function roundDateToMinute(date: Date): Date {
+  return new Date(Math.floor(date.getTime() / 60_000) * 60_000);
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function circularMeanDeg(values: number[]): number | null {
-  if (values.length === 0) return null;
-
-  let sinSum = 0;
-  let cosSum = 0;
-
-  for (const deg of values) {
-    const rad = (deg * Math.PI) / 180;
-    sinSum += Math.sin(rad);
-    cosSum += Math.cos(rad);
-  }
-
-  const meanRad = Math.atan2(sinSum / values.length, cosSum / values.length);
-  return normalize360((meanRad * 180) / Math.PI);
-}
-
-function estimateDeviceAltitude(beta: number | null): number | null {
-  if (beta === null || !Number.isFinite(beta)) return null;
-  return clamp(90 - beta, -90, 90);
-}
-
-function formatDeg(value: number | null, digits = 1): string {
-  if (value === null || !Number.isFinite(value)) return "—";
-  return `${value.toFixed(digits)}°`;
-}
-
-function formatTime(date: Date | null): string | null {
-  if (!date) return null;
-
+function formatTime(date: Date): string {
   return date.toLocaleTimeString("it-CH", {
     hour: "2-digit",
     minute: "2-digit",
   });
 }
 
-function directionText(deltaAz: number | null): string {
-  if (deltaAz === null) return "Guida non disponibile";
-  if (Math.abs(deltaAz) <= 1.5) return "Azimut centrato";
-  return deltaAz > 0 ? "Ruota a destra →" : "← Ruota a sinistra";
+function formatWindow(w: AdvisorWindow): string {
+  return `${formatTime(w.start)}–${formatTime(w.end)}`;
 }
 
-function altitudeText(deltaAlt: number | null): string {
-  if (deltaAlt === null) return "Altezza non disponibile";
-  if (Math.abs(deltaAlt) <= 2.0) return "Altezza centrata";
-  return deltaAlt > 0 ? "Alza ↑" : "Abbassa ↓";
+function directionLabel(delta: number | null): string {
+  if (delta === null) return "—";
+  const abs = Math.abs(delta);
+
+  if (abs < 4) return "davanti";
+  if (abs < 15) return delta > 0 ? "poco a destra" : "poco a sinistra";
+  if (abs < 45) return delta > 0 ? "a destra" : "a sinistra";
+  if (abs < 100) return delta > 0 ? "molto a destra" : "molto a sinistra";
+  return "dietro / fuori campo";
 }
 
-function azimuthToCompass(azimuth: number | null): string {
-  if (azimuth === null || !Number.isFinite(azimuth)) return "—";
-
-  const dirs = [
-    "Nord",
-    "Nord-Nord-Est",
-    "Nord-Est",
-    "Est-Nord-Est",
-    "Est",
-    "Est-Sud-Est",
-    "Sud-Est",
-    "Sud-Sud-Est",
-    "Sud",
-    "Sud-Sud-Ovest",
-    "Sud-Ovest",
-    "Ovest-Sud-Ovest",
-    "Ovest",
-    "Ovest-Nord-Ovest",
-    "Nord-Ovest",
-    "Nord-Nord-Ovest",
-  ];
-
-  const index = Math.round(normalize360(azimuth) / 22.5) % 16;
-  return dirs[index];
+function altitudeQuality(altitude: number): string {
+  if (altitude < 0) return "sotto orizzonte";
+  if (altitude < 5) return "quasi sull’orizzonte";
+  if (altitude < 15) return "basso";
+  if (altitude < 35) return "buono";
+  if (altitude < 65) return "ottimo";
+  return "molto alto";
 }
 
-function altitudeBand(altitude: number | null): string {
-  if (altitude === null || !Number.isFinite(altitude)) return "—";
-  if (altitude < 0) return "sotto";
-  if (altitude < 10) return "bassissima";
-  if (altitude < 25) return "bassa";
-  if (altitude < 45) return "media";
-  if (altitude < 65) return "alta";
-  return "molto alta";
-}
-
-function fieldAltitudeBand(altitude: number | null): string {
-  if (altitude === null || !Number.isFinite(altitude)) return "—";
-  if (altitude < 0) return "SOTTO";
-  if (altitude < 10) return "BASSISSIMA";
-  if (altitude < 25) return "BASSA";
-  if (altitude < 45) return "MEDIA";
-  if (altitude < 65) return "ALTA";
-  return "MOLTO ALTA";
-}
-
-function statusColorValue(kind: StatusKind | undefined): string {
-  if (kind === "good") return "#15ff31";
-  if (kind === "medium") return "#ffd400";
-  if (kind === "solar") return "#ff9966";
-  return "#ff6666";
-}
-
-function radarPointFromAzAlt(
-  azimuth: number | null,
-  altitude: number | null
-): RadarPoint | null {
-  if (
-    azimuth === null ||
-    altitude === null ||
-    !Number.isFinite(azimuth) ||
-    !Number.isFinite(altitude)
-  ) {
-    return null;
-  }
-
-  const safeAltitude = clamp(altitude, 0, 90);
-  const radius = 43 * (1 - safeAltitude / 90);
-  const rad = (normalize360(azimuth) * Math.PI) / 180;
-
-  return {
-    x: 50 + Math.sin(rad) * radius,
-    y: 50 - Math.cos(rad) * radius,
-  };
-}
-
-function skyFinderTurnText(
-  target: BodyRow | null,
-  correctedHeading: number | null
-): string {
-  if (!target) return "Target non disponibile.";
-
-  if (!target.observableNow) {
-    return "Non cercarlo ora: usa la prima finestra utile indicata sotto.";
-  }
-
-  if (correctedHeading === null) {
-    return "Attiva la bussola per sapere dove punta il lato corto superiore dell’iPhone.";
-  }
-
-  const delta = normalize180(target.azimuth - correctedHeading);
-
-  if (Math.abs(delta) <= 8) {
-    return "Il lato corto superiore dell’iPhone è orientato nella zona giusta. Ora cerca alla quota indicata.";
-  }
-
-  if (delta > 0) {
-    return `Ruota verso destra di circa ${Math.abs(delta).toFixed(0)}°.`;
-  }
-
-  return `Ruota verso sinistra di circa ${Math.abs(delta).toFixed(0)}°.`;
-}
-
-function fieldTurnShort(
-  target: BodyRow | null,
-  correctedHeading: number | null
-): string {
-  if (!target) return "TARGET NON DISPONIBILE";
-
-  if (!target.observableNow) {
-    return "NON CERCARLO ORA";
-  }
-
-  if (correctedHeading === null) {
-    return "ATTIVA BUSSOLA";
-  }
-
-  const delta = normalize180(target.azimuth - correctedHeading);
-
-  if (Math.abs(delta) <= 8) {
-    return "DIREZIONE OK";
-  }
-
-  if (delta > 0) {
-    return `DESTRA ${Math.abs(delta).toFixed(0)}°`;
-  }
-
-  return `SINISTRA ${Math.abs(delta).toFixed(0)}°`;
-}
-
-function analyzeObservability(
-  label: string,
+function skyQualityScore(
   altitude: number,
-  sunAltitude: number
-): Observability {
-  const aboveHorizon = altitude > 0;
+  absDelta: number | null,
+  priority: number
+): number {
+  let score = priority;
 
-  if (label === "Sole") {
-    if (aboveHorizon) {
-      return {
-        observationLabel: "Dato solare",
-        observationScore: 5,
-        observationReason:
-          "Sole sopra l’orizzonte: disponibile solo come dato astronomico. Non usare guida, AR o telescopio senza filtro solare certificato.",
-        observableNow: false,
-        guideAllowed: false,
-        calibrationAllowed: false,
-        statusKind: "solar",
-      };
+  if (altitude < 0) score -= 120;
+  else if (altitude < 5) score -= 35;
+  else if (altitude < 15) score -= 12;
+  else if (altitude < 35) score += 16;
+  else score += 28;
+
+  if (absDelta !== null) {
+    if (absDelta < 5) score += 40;
+    else if (absDelta < 15) score += 25;
+    else if (absDelta < 35) score += 12;
+    else if (absDelta > 110) score -= 20;
+  }
+
+  return score;
+}
+
+function computeHeadingJitter(samples: HeadingSample[]): number | null {
+  if (samples.length < 4) return null;
+
+  const recent = samples.slice(-10);
+  let total = 0;
+  let count = 0;
+
+  for (let i = 1; i < recent.length; i++) {
+    total += absAngularDelta(recent[i].heading, recent[i - 1].heading);
+    count += 1;
+  }
+
+  if (count === 0) return null;
+  return total / count;
+}
+
+function getCalibrationState(params: {
+  heading: number | null;
+  headingAccuracy: number | null;
+  headingJitter: number | null;
+  compassMode: CompassMode;
+}): CalibrationState {
+  const { heading, headingAccuracy, headingJitter, compassMode } = params;
+
+  if (compassMode === "off") {
+    return {
+      score: 0,
+      label: "Bussola non attiva",
+      detail: "Attiva la bussola per usare il puntamento reale.",
+      reliable: false,
+      warning: "La direzione del telefono non è ancora disponibile.",
+    };
+  }
+
+  if (compassMode === "denied") {
+    return {
+      score: 0,
+      label: "Permesso negato",
+      detail: "Abilita i permessi di movimento/orientamento nelle impostazioni.",
+      reliable: false,
+      warning: "Senza permesso l’app non può leggere la direzione.",
+    };
+  }
+
+  if (compassMode === "unavailable" || heading === null) {
+    return {
+      score: 0,
+      label: "Bussola non disponibile",
+      detail: "Questo browser/dispositivo non sta fornendo dati di orientamento.",
+      reliable: false,
+      warning: "Prova Safari su iPhone oppure Chrome/Edge su Android.",
+    };
+  }
+
+  let score = 100;
+  const warnings: string[] = [];
+
+  if (compassMode === "relative") {
+    score -= 24;
+    warnings.push("Orientamento relativo: il Nord potrebbe non essere assoluto.");
+  }
+
+  if (headingAccuracy === null) {
+    score -= 10;
+  } else if (headingAccuracy <= 10) {
+    score -= 0;
+  } else if (headingAccuracy <= 20) {
+    score -= 10;
+  } else if (headingAccuracy <= 35) {
+    score -= 25;
+    warnings.push("Precisione bussola mediocre.");
+  } else {
+    score -= 45;
+    warnings.push("Possibile disturbo magnetico o bussola non calibrata.");
+  }
+
+  if (headingJitter !== null) {
+    if (headingJitter <= 3) {
+      score -= 0;
+    } else if (headingJitter <= 8) {
+      score -= 8;
+    } else if (headingJitter <= 15) {
+      score -= 22;
+      warnings.push("Direzione instabile: tieni il telefono fermo.");
+    } else {
+      score -= 38;
+      warnings.push("Direzione molto instabile.");
     }
+  }
 
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (score >= 82) {
     return {
-      observationLabel: "Sotto",
-      observationScore: 0,
-      observationReason: "Sole sotto l’orizzonte.",
-      observableNow: false,
-      guideAllowed: false,
-      calibrationAllowed: false,
-      statusKind: "bad",
+      score,
+      label: "Calibrazione buona",
+      detail: "Puntamento utilizzabile sul campo.",
+      reliable: true,
+      warning: warnings[0] ?? null,
     };
   }
 
-  if (!aboveHorizon) {
+  if (score >= 60) {
     return {
-      observationLabel: "Sotto",
-      observationScore: 0,
-      observationReason: `${label} è sotto l’orizzonte.`,
-      observableNow: false,
-      guideAllowed: false,
-      calibrationAllowed: false,
-      statusKind: "bad",
+      score,
+      label: "Calibrazione discreta",
+      detail: "Usabile, ma verifica con una stella nota o con la Luna.",
+      reliable: true,
+      warning: warnings[0] ?? "Precisione non perfetta.",
     };
   }
 
-  if (altitude < 8) {
+  if (score >= 35) {
     return {
-      observationLabel: "Troppo basso",
-      observationScore: 10,
-      observationReason: `${label} è sopra l’orizzonte ma troppo basso: ostacoli, foschia e montagne probabili.`,
-      observableNow: false,
-      guideAllowed: false,
-      calibrationAllowed: false,
-      statusKind: "bad",
-    };
-  }
-
-  if (sunAltitude > -6) {
-    if (label === "Luna") {
-      if (altitude >= 20) {
-        return {
-          observationLabel: "Possibile",
-          observationScore: 45,
-          observationReason:
-            "Luna potenzialmente visibile anche di giorno se il contrasto è sufficiente.",
-          observableNow: true,
-          guideAllowed: true,
-          calibrationAllowed: true,
-          statusKind: "medium",
-        };
-      }
-
-      return {
-        observationLabel: "Difficile",
-        observationScore: 20,
-        observationReason:
-          "Luna sopra l’orizzonte ma bassa o poco contrastata in cielo diurno.",
-        observableNow: false,
-        guideAllowed: false,
-        calibrationAllowed: false,
-        statusKind: "bad",
-      };
-    }
-
-    if (label === "Venere" && altitude >= 25) {
-      return {
-        observationLabel: "Difficile",
-        observationScore: 25,
-        observationReason:
-          "Venere può essere teoricamente individuabile di giorno, ma è difficile e non consigliata per calibrazione.",
-        observableNow: false,
-        guideAllowed: false,
-        calibrationAllowed: false,
-        statusKind: "medium",
-      };
-    }
-
-    return {
-      observationLabel: "Non ora",
-      observationScore: 0,
-      observationReason:
-        "Corpo sopra l’orizzonte, ma il cielo è troppo luminoso: non osservabile a occhio nudo ora.",
-      observableNow: false,
-      guideAllowed: false,
-      calibrationAllowed: false,
-      statusKind: "bad",
-    };
-  }
-
-  if (sunAltitude > -12) {
-    if (label === "Luna" || label === "Venere" || label === "Giove") {
-      if (altitude >= 30) {
-        return {
-          observationLabel: "Buono",
-          observationScore: 70,
-          observationReason: `${label} è un buon target nel crepuscolo.`,
-          observableNow: true,
-          guideAllowed: true,
-          calibrationAllowed: true,
-          statusKind: "good",
-        };
-      }
-
-      if (altitude >= 15) {
-        return {
-          observationLabel: "Possibile",
-          observationScore: 50,
-          observationReason: `${label} è possibile, ma ancora non ideale.`,
-          observableNow: true,
-          guideAllowed: true,
-          calibrationAllowed: true,
-          statusKind: "medium",
-        };
-      }
-
-      return {
-        observationLabel: "Basso",
-        observationScore: 20,
-        observationReason: `${label} è basso nel crepuscolo: attendere se sta salendo.`,
-        observableNow: false,
-        guideAllowed: false,
-        calibrationAllowed: false,
-        statusKind: "bad",
-      };
-    }
-
-    if (altitude >= 30) {
-      return {
-        observationLabel: "Difficile",
-        observationScore: 35,
-        observationReason: `${label} sopra l’orizzonte, ma il cielo è ancora troppo chiaro per una buona osservazione.`,
-        observableNow: false,
-        guideAllowed: false,
-        calibrationAllowed: false,
-        statusKind: "medium",
-      };
-    }
-
-    return {
-      observationLabel: "Non ora",
-      observationScore: 0,
-      observationReason: `${label} non è ancora realisticamente osservabile.`,
-      observableNow: false,
-      guideAllowed: false,
-      calibrationAllowed: false,
-      statusKind: "bad",
-    };
-  }
-
-  if (altitude >= 55) {
-    return {
-      observationLabel: "Ottimo",
-      observationScore: 100,
-      observationReason: `${label} è alto/a: target molto favorevole.`,
-      observableNow: true,
-      guideAllowed: true,
-      calibrationAllowed: true,
-      statusKind: "good",
-    };
-  }
-
-  if (altitude >= 35) {
-    return {
-      observationLabel: "Buono",
-      observationScore: 85,
-      observationReason: `${label} è ben posizionato/a per osservazione.`,
-      observableNow: true,
-      guideAllowed: true,
-      calibrationAllowed: true,
-      statusKind: "good",
-    };
-  }
-
-  if (altitude >= 20) {
-    return {
-      observationLabel: "Osservabile",
-      observationScore: 70,
-      observationReason: `${label} è osservabile, anche se non altissimo/a.`,
-      observableNow: true,
-      guideAllowed: true,
-      calibrationAllowed: true,
-      statusKind: "good",
-    };
-  }
-
-  if (altitude >= 10) {
-    return {
-      observationLabel: "Basso",
-      observationScore: 45,
-      observationReason: `${label} è osservabile ma basso/a: possibili ostacoli e turbolenza.`,
-      observableNow: true,
-      guideAllowed: true,
-      calibrationAllowed: true,
-      statusKind: "medium",
+      score,
+      label: "Calibrazione debole",
+      detail: "Meglio ricalibrare prima di fidarsi del radar.",
+      reliable: false,
+      warning:
+        warnings[0] ??
+        "Muovi il telefono lentamente a forma di 8, lontano da metalli e magneti.",
     };
   }
 
   return {
-    observationLabel: "Troppo basso",
-    observationScore: 10,
-    observationReason: `${label} è troppo basso/a per una buona osservazione.`,
-    observableNow: false,
-    guideAllowed: false,
-    calibrationAllowed: false,
-    statusKind: "bad",
+    score,
+    label: "Calibrazione critica",
+    detail: "Il puntamento non è affidabile.",
+    reliable: false,
+    warning:
+      warnings[0] ??
+      "Allontanati da auto, ringhiere, casse audio, magneti o cover magnetiche.",
   };
 }
 
-function buildObservationPlan(
-  lat: number,
-  lon: number,
-  rows: BodyRow[]
-): ObservationItem[] {
-  const observer = new Observer(lat, lon, 0);
-  const now = new Date();
-
-  return SKY_BODIES.map(({ body, label }) => {
-    let bestAltitude = -90;
-    let bestDate: Date | null = null;
-    let bestAnalysis: Observability | null = null;
-    let firstUsefulDate: Date | null = null;
-
-    const currentRow = rows.find((row) => row.label === label);
-    const currentAnalysis =
-      currentRow ??
-      ({
-        observationLabel: "—",
-        observationScore: 0,
-        observationReason: "Dati attuali non ancora disponibili.",
-        observableNow: false,
-        guideAllowed: false,
-        calibrationAllowed: false,
-        statusKind: "bad",
-      } as BodyRow);
-
-    const steps = Math.floor((FORECAST_HOURS * 60) / FORECAST_STEP_MINUTES);
-
-    for (let i = 0; i <= steps; i += 1) {
-      const t = new Date(now.getTime() + i * FORECAST_STEP_MINUTES * 60 * 1000);
-
-      const eq = Equator(body, t, observer, true, true);
-      const hor = Horizon(t, observer, eq.ra, eq.dec, "normal");
-
-      const sunEq = Equator(Body.Sun, t, observer, true, true);
-      const sunHor = Horizon(t, observer, sunEq.ra, sunEq.dec, "normal");
-
-      const analysis = analyzeObservability(label, hor.altitude, sunHor.altitude);
-
-      if (analysis.observableNow && firstUsefulDate === null) {
-        firstUsefulDate = t;
-      }
-
-      const isBetter =
-        bestAnalysis === null ||
-        analysis.observationScore > bestAnalysis.observationScore ||
-        (analysis.observationScore === bestAnalysis.observationScore &&
-          hor.altitude > bestAltitude);
-
-      if (isBetter) {
-        bestAnalysis = analysis;
-        bestAltitude = hor.altitude;
-        bestDate = t;
-      }
-    }
-
-    const finalBestAnalysis =
-      bestAnalysis ??
-      analyzeObservability(
-        label,
-        bestAltitude,
-        rows.find((r) => r.id === "Sole")?.altitude ?? 90
-      );
-
-    const firstUsefulTime = formatTime(firstUsefulDate);
-    const bestTime = formatTime(bestDate);
-
-    let advice: string;
-
-    if (label === "Sole") {
-      advice = finalBestAnalysis.observationReason;
-    } else if (currentRow?.observableNow) {
-      advice = `${label} è osservabile ora. Momento migliore: ${
-        bestTime ?? "—"
-      }.`;
-    } else if (firstUsefulTime) {
-      advice = `${label} non è osservabile ora. Prima finestra utile: ${firstUsefulTime}. Momento migliore: ${
-        bestTime ?? "—"
-      }.`;
-    } else {
-      advice = `Nessuna finestra utile nelle prossime ${FORECAST_HOURS} ore. ${currentAnalysis.observationReason}`;
-    }
-
-    return {
-      id: label,
-      label,
-      currentLabel: currentAnalysis.observationLabel,
-      currentReason: currentAnalysis.observationReason,
-      currentAltitude: currentRow?.altitude ?? null,
-      firstUsefulTime,
-      bestTime,
-      bestAltitude,
-      score: finalBestAnalysis.observationScore,
-      rating: finalBestAnalysis.observationLabel,
-      advice,
-      statusKind: finalBestAnalysis.statusKind,
-      hasUsefulWindow: firstUsefulDate !== null,
-    };
-  }).sort((a, b) => {
-    if (a.id === "Sole" && b.id !== "Sole") return 1;
-    if (b.id === "Sole" && a.id !== "Sole") return -1;
-
-    if (a.hasUsefulWindow && !b.hasUsefulWindow) return -1;
-    if (b.hasUsefulWindow && !a.hasUsefulWindow) return 1;
-
-    return b.score - a.score;
-  });
+function getCalibrationColor(score: number): string {
+  if (score >= 82) return "#7CFF9B";
+  if (score >= 60) return "#FFE27A";
+  if (score >= 35) return "#FFB86B";
+  return "#FF6B6B";
 }
 
-export default function App() {
-  const [gps, setGps] = useState<GpsState>({
-    lat: null,
-    lon: null,
-    accuracy: null,
-    error: null,
-  });
+function safeNumber(value: string): number | null {
+  const n = Number(value.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
 
-  const [rows, setRows] = useState<BodyRow[]>([]);
-  const [selectedId, setSelectedId] = useState<string>(() =>
-    readStoredSelectedTarget()
-  );
-  const [aimMode, setAimMode] = useState<AimMode>(() => readStoredAimMode());
+function getAltAz(obj: SkyObject, date: Date, observer: Observer): AltAz | null {
+  try {
+    let ra: number;
+    let dec: number;
 
-  const [orientation, setOrientation] = useState<OrientationState>({
-    enabled: false,
-    rawHeading: null,
-    smoothHeading: null,
-    beta: null,
-    gamma: null,
-    deviceAltitude: null,
-    error: null,
-  });
-
-  const [offsetDeg, setOffsetDeg] = useState<number>(() => {
-    const saved = localStorage.getItem(OFFSET_KEY);
-    const parsed = saved === null ? 0 : Number(saved);
-    return Number.isFinite(parsed) ? parsed : 0;
-  });
-
-  const [cameraActive, setCameraActive] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [isStandalone, setIsStandalone] = useState(false);
-  const [calibrationMessage, setCalibrationMessage] = useState<string | null>(
-    null
-  );
-
-  const headingSamplesRef = useRef<number[]>([]);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const selectedTarget = useMemo(() => {
-    return (
-      rows.find((row) => row.id === selectedId) ??
-      rows.find((row) => row.id === "Luna") ??
-      null
-    );
-  }, [rows, selectedId]);
-
-  const isSolarTarget = selectedTarget?.id === "Sole";
-  const isGuidanceDisabled =
-    selectedTarget === null || isSolarTarget || !selectedTarget.guideAllowed;
-
-  const observationPlan = useMemo(() => {
-    if (gps.lat === null || gps.lon === null) return [];
-    return buildObservationPlan(gps.lat, gps.lon, rows);
-  }, [gps.lat, gps.lon, rows]);
-
-  const currentSelectedPlan = useMemo(() => {
-    return observationPlan.find((item) => item.id === selectedId) ?? null;
-  }, [observationPlan, selectedId]);
-
-  const guidanceDisabledReason = useMemo(() => {
-    if (!selectedTarget) return "Nessun target disponibile.";
-
-    if (isSolarTarget) {
-      return "Il Sole è in Solar Safe Mode: guida, AR e TARGET LOCK sono disattivati.";
+    if (obj.kind === "body" && obj.body) {
+      const eq = Equator(obj.body, date, observer, true, true);
+      ra = eq.ra;
+      dec = eq.dec;
+    } else if (
+      (obj.kind === "star" || obj.kind === "dso") &&
+      typeof obj.raHours === "number" &&
+      typeof obj.decDeg === "number"
+    ) {
+      ra = obj.raHours;
+      dec = obj.decDeg;
+    } else {
+      return null;
     }
 
-    if (!selectedTarget.visible) {
-      return `${selectedTarget.label} è sotto l’orizzonte.`;
-    }
-
-    if (!selectedTarget.guideAllowed) {
-      return selectedTarget.observationReason;
-    }
-
-    return null;
-  }, [selectedTarget, isSolarTarget]);
-
-  const correctedHeading = useMemo(() => {
-    if (orientation.smoothHeading === null) return null;
-    return normalize360(orientation.smoothHeading + offsetDeg);
-  }, [orientation.smoothHeading, offsetDeg]);
-
-  const skyFinderDeltaAz = useMemo(() => {
-    if (!selectedTarget || correctedHeading === null) return null;
-    return normalize180(selectedTarget.azimuth - correctedHeading);
-  }, [selectedTarget, correctedHeading]);
-
-  const skyFinderMessage = useMemo(() => {
-    return skyFinderTurnText(selectedTarget, correctedHeading);
-  }, [selectedTarget, correctedHeading]);
-
-  const fieldMessage = useMemo(() => {
-    return fieldTurnShort(selectedTarget, correctedHeading);
-  }, [selectedTarget, correctedHeading]);
-
-  const deltaAz = useMemo(() => {
-    if (isGuidanceDisabled) return null;
-    if (!selectedTarget || correctedHeading === null) return null;
-    return normalize180(selectedTarget.azimuth - correctedHeading);
-  }, [selectedTarget, correctedHeading, isGuidanceDisabled]);
-
-  const deltaAlt = useMemo(() => {
-    if (isGuidanceDisabled) return null;
-    if (!selectedTarget || orientation.deviceAltitude === null) return null;
-    return selectedTarget.altitude - orientation.deviceAltitude;
-  }, [selectedTarget, orientation.deviceAltitude, isGuidanceDisabled]);
-
-  const telescopeAzLock =
-    aimMode === "telescope" &&
-    !isGuidanceDisabled &&
-    deltaAz !== null &&
-    Math.abs(deltaAz) <= 1.5;
-
-  const telescopeAltLock =
-    aimMode === "telescope" &&
-    !isGuidanceDisabled &&
-    deltaAlt !== null &&
-    Math.abs(deltaAlt) <= 2.0;
-
-  const telescopeTargetLock = telescopeAzLock && telescopeAltLock;
-
-  const canCalibrateOnSelectedTarget =
-    selectedTarget !== null &&
-    !isSolarTarget &&
-    selectedTarget.calibrationAllowed &&
-    orientation.smoothHeading !== null &&
-    aimMode === "telescope";
-
-  const calibrationButtonLabel =
-    aimMode !== "telescope"
-      ? "Calibrazione solo in Telescopio"
-      : selectedTarget?.id === "Sole"
-        ? "Sole non calibrabile direttamente"
-        : selectedTarget && !selectedTarget.calibrationAllowed
-          ? `${selectedTarget.label} non calibrabile ora`
-          : selectedTarget
-            ? `Calibra su ${selectedTarget.label}`
-            : "Calibra target";
-
-  const arMarker = useMemo(() => {
-    if (isGuidanceDisabled) return null;
-    if (aimMode !== "camera") return null;
-    if (deltaAz === null || deltaAlt === null) return null;
-
-    const horizontalFovDeg = 60;
-    const verticalFovDeg = 45;
-
-    const rawX = 50 + (deltaAz / (horizontalFovDeg / 2)) * 50;
-    const rawY = 50 - (deltaAlt / (verticalFovDeg / 2)) * 50;
-
-    const inside = rawX >= 0 && rawX <= 100 && rawY >= 0 && rawY <= 100;
+    const hor = Horizon(date, observer, ra, dec, "normal");
 
     return {
-      x: clamp(rawX, 6, 94),
-      y: clamp(rawY, 6, 94),
-      inside,
+      altitude: hor.altitude,
+      azimuth: normalizeDeg(hor.azimuth),
     };
-  }, [deltaAz, deltaAlt, isGuidanceDisabled, aimMode]);
+  } catch {
+    return null;
+  }
+}
 
-  useEffect(() => {
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
-      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
-        true;
+function objectRequiresDarkSky(obj: SkyObject): boolean {
+  if (obj.kind === "dso") return true;
+  if (obj.kind === "star") return true;
+  if (obj.label === "Urano" || obj.label === "Nettuno") return true;
+  return false;
+}
 
-    setIsStandalone(standalone);
-  }, []);
+function objectRequiresSunBelowHorizon(obj: SkyObject): boolean {
+  if (obj.label === "Sole") return false;
+  if (obj.label === "Luna") return false;
+  return true;
+}
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(AIM_MODE_KEY, aimMode);
-    } catch {
-      // Ignora errori localStorage.
-    }
-  }, [aimMode]);
+function usefulAltitudeForObject(obj: SkyObject, globalMinAltitude: number): number {
+  return Math.max(globalMinAltitude, obj.minUsefulAltitude ?? globalMinAltitude);
+}
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(SELECTED_TARGET_KEY, selectedId);
-    } catch {
-      // Ignora errori localStorage.
-    }
-  }, [selectedId]);
+function requiredSunAltitudeForObject(obj: SkyObject): number {
+  if (typeof obj.requiredSunAltitude === "number") return obj.requiredSunAltitude;
+  if (obj.kind === "dso") return -10;
+  if (obj.kind === "star") return -6;
+  if (obj.label === "Urano" || obj.label === "Nettuno") return -8;
+  if (objectRequiresSunBelowHorizon(obj)) return 0;
+  return 90;
+}
 
-  useEffect(() => {
-    if (rows.length === 0) return;
+function isSampleUsable(params: {
+  obj: SkyObject;
+  altitude: number;
+  sunAltitude: number;
+  minUsefulAltitude: number;
+}): boolean {
+  const { obj, altitude, sunAltitude, minUsefulAltitude } = params;
 
-    const targetExists = rows.some((row) => row.id === selectedId);
+  if (obj.label === "Sole") {
+    return altitude > 0;
+  }
 
-    if (!targetExists) {
-      setSelectedId("Luna");
-    }
-  }, [rows, selectedId]);
+  if (altitude < usefulAltitudeForObject(obj, minUsefulAltitude)) {
+    return false;
+  }
 
-  useEffect(() => {
-    if (!navigator.geolocation) {
-      setGps((prev) => ({
-        ...prev,
-        error: "GPS non disponibile su questo browser.",
-      }));
-      return;
-    }
+  if (objectRequiresDarkSky(obj)) {
+    return sunAltitude < requiredSunAltitudeForObject(obj);
+  }
 
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        setGps({
-          lat: pos.coords.latitude,
-          lon: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-          error: null,
+  if (objectRequiresSunBelowHorizon(obj)) {
+    return sunAltitude < 0;
+  }
+
+  return true;
+}
+
+function buildUsefulWindows(samples: AdvisorSample[]): AdvisorWindow[] {
+  const windows: AdvisorWindow[] = [];
+  let currentStart: Date | null = null;
+  let currentEnd: Date | null = null;
+
+  for (const sample of samples) {
+    const sampleStart = sample.date;
+    const sampleEnd = addMinutes(sample.date, ADVISOR_STEP_MINUTES);
+
+    if (sample.usable) {
+      if (!currentStart) currentStart = sampleStart;
+      currentEnd = sampleEnd;
+    } else {
+      if (currentStart && currentEnd) {
+        windows.push({
+          start: currentStart,
+          end: currentEnd,
+          minutes: Math.round(
+            (currentEnd.getTime() - currentStart.getTime()) / 60_000
+          ),
         });
-      },
-      (err) => {
-        setGps((prev) => ({
-          ...prev,
-          error: `GPS: ${err.message}`,
-        }));
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 2000,
-        timeout: 15000,
       }
-    );
+      currentStart = null;
+      currentEnd = null;
+    }
+  }
 
-    return () => navigator.geolocation.clearWatch(watchId);
+  if (currentStart && currentEnd) {
+    windows.push({
+      start: currentStart,
+      end: currentEnd,
+      minutes: Math.round(
+        (currentEnd.getTime() - currentStart.getTime()) / 60_000
+      ),
+    });
+  }
+
+  return windows;
+}
+
+function monthName(m: number): string {
+  const names = [
+    "gen",
+    "feb",
+    "mar",
+    "apr",
+    "mag",
+    "giu",
+    "lug",
+    "ago",
+    "set",
+    "ott",
+    "nov",
+    "dic",
+  ];
+  return names[m - 1] ?? `${m}`;
+}
+
+function seasonLabel(obj: SkyObject): string {
+  if (!obj.bestMonths || obj.bestMonths.length === 0) return "stagione: —";
+  return `stagione: ${obj.bestMonths.map(monthName).join(" · ")}`;
+}
+
+function seasonBonus(obj: SkyObject, date: Date): number {
+  if (!obj.bestMonths || obj.bestMonths.length === 0) return 0;
+
+  const month = date.getMonth() + 1;
+  const prevMonth = month === 1 ? 12 : month - 1;
+  const nextMonth = month === 12 ? 1 : month + 1;
+
+  if (obj.bestMonths.includes(month)) return 22;
+  if (obj.bestMonths.includes(prevMonth) || obj.bestMonths.includes(nextMonth)) {
+    return 10;
+  }
+
+  return -12;
+}
+
+function difficultyBonus(obj: SkyObject): number {
+  if (obj.kind !== "dso") return 0;
+  if (obj.difficulty === "facile") return 18;
+  if (obj.difficulty === "media") return 4;
+  if (obj.difficulty === "difficile") return -14;
+  return 0;
+}
+
+function makeAdviceForObject(params: {
+  obj: SkyObject;
+  observer: Observer;
+  baseTime: Date;
+  minUsefulAltitude: number;
+}): VisibilityAdvice | null {
+  const { obj, observer, baseTime, minUsefulAltitude } = params;
+
+  const current = getAltAz(obj, baseTime, observer);
+  const sunObj = SKY_OBJECTS.find((o) => o.label === "Sole");
+
+  if (!current || !sunObj) return null;
+
+  const samples: AdvisorSample[] = [];
+
+  const totalSteps = Math.round(
+    (ADVISOR_SCAN_HOURS * 60) / ADVISOR_STEP_MINUTES
+  );
+
+  for (let i = 0; i <= totalSteps; i++) {
+    const date = addMinutes(baseTime, i * ADVISOR_STEP_MINUTES);
+    const altAz = getAltAz(obj, date, observer);
+    const sunAltAz = getAltAz(sunObj, date, observer);
+
+    if (!altAz || !sunAltAz) continue;
+
+    const usable = isSampleUsable({
+      obj,
+      altitude: altAz.altitude,
+      sunAltitude: sunAltAz.altitude,
+      minUsefulAltitude,
+    });
+
+    samples.push({
+      date,
+      altitude: altAz.altitude,
+      azimuth: altAz.azimuth,
+      sunAltitude: sunAltAz.altitude,
+      usable,
+    });
+  }
+
+  if (samples.length === 0) return null;
+
+  const usefulWindows = buildUsefulWindows(samples);
+  const usefulMinutes = usefulWindows.reduce((sum, w) => sum + w.minutes, 0);
+
+  const bestUsable = samples
+    .filter((s) => s.usable)
+    .sort((a, b) => b.altitude - a.altitude)[0];
+
+  const bestOverall = [...samples].sort((a, b) => b.altitude - a.altitude)[0];
+  const best = bestUsable ?? bestOverall;
+
+  const isCurrentlyUseful = samples[0]?.usable ?? false;
+
+  let status: VisibilityAdvice["status"] = "Non consigliato";
+  let reason = "";
+
+  const requiredSun = requiredSunAltitudeForObject(obj);
+  const minAlt = usefulAltitudeForObject(obj, minUsefulAltitude);
+
+  if (obj.label === "Sole") {
+    status = "Sole";
+    reason = "Non osservare direttamente il Sole senza filtri certificati.";
+  } else if (isCurrentlyUseful) {
+    status = "Ora";
+    if (best.date.getTime() > baseTime.getTime() + 20 * 60_000) {
+      reason = `Già osservabile. Meglio verso le ${formatTime(best.date)}.`;
+    } else {
+      reason = "Buono adesso.";
+    }
+  } else if (usefulWindows.length > 0) {
+    status = "Più tardi";
+    reason = `Prossima finestra utile: ${formatWindow(usefulWindows[0])}.`;
+  } else if (bestOverall.altitude > 0 && bestOverall.altitude < minAlt) {
+    status = "Basso";
+    reason = `Resta basso: massimo ${fmt(bestOverall.altitude)}° nelle prossime ${ADVISOR_SCAN_HOURS} ore.`;
+  } else if (
+    bestOverall.altitude >= minAlt &&
+    objectRequiresDarkSky(obj) &&
+    bestOverall.sunAltitude >= requiredSun
+  ) {
+    status = "Non consigliato";
+    reason = `Serve cielo più buio: Sole sotto ${requiredSun}°.`;
+  } else if (
+    bestOverall.altitude >= minAlt &&
+    objectRequiresSunBelowHorizon(obj) &&
+    bestOverall.sunAltitude >= 0
+  ) {
+    status = "Non consigliato";
+    reason = "Sarebbe alto, ma il Sole è ancora sopra l’orizzonte.";
+  } else {
+    status = "Non consigliato";
+    reason = "Non raggiunge condizioni utili nella finestra calcolata.";
+  }
+
+  let advisorScore = obj.priority;
+
+  if (obj.label === "Sole") advisorScore -= 80;
+
+  advisorScore += Math.max(0, best.altitude) * 1.25;
+  advisorScore += Math.min(60, usefulMinutes / 4);
+  advisorScore += seasonBonus(obj, best.date);
+  advisorScore += difficultyBonus(obj);
+
+  if (obj.kind === "dso") {
+    advisorScore += 15;
+    if (typeof obj.mag === "number") {
+      advisorScore += Math.max(0, 7 - obj.mag) * 2;
+    }
+  }
+
+  if (isCurrentlyUseful) advisorScore += 45;
+  if (status === "Più tardi") advisorScore += 20;
+  if (status === "Basso") advisorScore -= 35;
+  if (status === "Non consigliato") advisorScore -= 70;
+
+  return {
+    ...obj,
+    currentAltitude: current.altitude,
+    currentAzimuth: current.azimuth,
+    bestTime: best.date,
+    bestAltitude: best.altitude,
+    bestAzimuth: best.azimuth,
+    usefulWindows,
+    usefulMinutes,
+    status,
+    reason,
+    advisorScore,
+    isCurrentlyUseful,
+    seasonLabel: seasonLabel(obj),
+  };
+}
+
+function getStatusColor(status: VisibilityAdvice["status"]): string {
+  if (status === "Ora") return "#7CFF9B";
+  if (status === "Più tardi") return "#FFE27A";
+  if (status === "Basso") return "#FFB86B";
+  if (status === "Sole") return "#FF8A6B";
+  return "#AAB3D8";
+}
+
+function getKindColor(kind: SkyKind): string {
+  if (kind === "dso") return "#7CFFCB";
+  if (kind === "star") return "#7CFF9B";
+  return "#8c5cff";
+}
+
+function App() {
+  const [now, setNow] = useState(() => new Date());
+
+  const [latitude, setLatitude] = useState<number | null>(null);
+  const [longitude, setLongitude] = useState<number | null>(null);
+  const [geoAccuracy, setGeoAccuracy] = useState<number | null>(null);
+  const [geoStatus, setGeoStatus] = useState("Posizione non ancora attiva");
+
+  const [manualLat, setManualLat] = useState("");
+  const [manualLon, setManualLon] = useState("");
+
+  const [compassMode, setCompassMode] = useState<CompassMode>("off");
+  const [rawHeading, setRawHeading] = useState<number | null>(null);
+  const [headingAccuracy, setHeadingAccuracy] = useState<number | null>(null);
+  const [headingJitter, setHeadingJitter] = useState<number | null>(null);
+  const [headingOffset, setHeadingOffset] = useState(0);
+
+  const [fieldMode, setFieldMode] = useState(false);
+  const [showInvisible, setShowInvisible] = useState(false);
+  const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+  const [minUsefulAltitude, setMinUsefulAltitude] = useState(15);
+  const [showOnlyDeepSky, setShowOnlyDeepSky] = useState(false);
+
+  const samplesRef = useRef<HeadingSample[]>([]);
+  const watchIdRef = useRef<number | null>(null);
+  const compassListeningRef = useRef(false);
+
+  const effectiveHeading =
+    rawHeading === null ? null : normalizeDeg(rawHeading + headingOffset);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setNow(new Date());
+    }, 1000);
+
+    return () => window.clearInterval(id);
   }, []);
-
-  useEffect(() => {
-    if (gps.lat === null || gps.lon === null) return;
-
-    const calculate = () => {
-      const now = new Date();
-      const observer = new Observer(gps.lat!, gps.lon!, 0);
-
-      const rawRows = SKY_BODIES.map(({ body, label }) => {
-        const eq = Equator(body, now, observer, true, true);
-        const hor = Horizon(now, observer, eq.ra, eq.dec, "normal");
-
-        return {
-          id: label,
-          label,
-          azimuth: hor.azimuth,
-          altitude: hor.altitude,
-          visible: hor.altitude > 0,
-        };
-      });
-
-      const sunAltitude =
-        rawRows.find((row) => row.id === "Sole")?.altitude ?? 90;
-
-      const nextRows: BodyRow[] = rawRows.map((row) => ({
-        ...row,
-        ...analyzeObservability(row.label, row.altitude, sunAltitude),
-      }));
-
-      setRows(nextRows);
-    };
-
-    calculate();
-    const interval = window.setInterval(calculate, 5000);
-
-    return () => window.clearInterval(interval);
-  }, [gps.lat, gps.lon]);
-
-  useEffect(() => {
-    if (aimMode === "camera" && !isGuidanceDisabled) return;
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-
-    setCameraActive(false);
-  }, [isGuidanceDisabled, aimMode]);
 
   useEffect(() => {
     return () => {
-      window.removeEventListener("deviceorientation", handleOrientation, true);
-      streamRef.current?.getTracks().forEach((track) => track.stop());
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
     };
   }, []);
 
-  async function enableCompass() {
-    setOrientation((prev) => ({ ...prev, error: null }));
+  const observer = useMemo(() => {
+    if (latitude === null || longitude === null) return null;
+    return new Observer(latitude, longitude, 0);
+  }, [latitude, longitude]);
 
-    if (!("DeviceOrientationEvent" in window)) {
-      setOrientation((prev) => ({
-        ...prev,
-        enabled: false,
-        error: "Orientamento dispositivo non disponibile su questo browser.",
-      }));
+  const minuteKey = Math.floor(now.getTime() / 60_000);
+
+  const skyResults = useMemo<SkyResult[]>(() => {
+    if (!observer) return [];
+
+    const results: SkyResult[] = [];
+
+    for (const obj of SKY_OBJECTS) {
+      const altAz = getAltAz(obj, now, observer);
+      if (!altAz) continue;
+
+      const altitude = altAz.altitude;
+      const azimuth = altAz.azimuth;
+      const visible = altitude > 0;
+
+      const delta =
+        effectiveHeading === null
+          ? null
+          : signedAngularDelta(azimuth, effectiveHeading);
+
+      const absDelta = delta === null ? null : Math.abs(delta);
+
+      const qualityLabel = altitudeQuality(altitude);
+      const qualityScore = skyQualityScore(altitude, absDelta, obj.priority);
+
+      results.push({
+        ...obj,
+        altitude,
+        azimuth,
+        deltaFromHeading: delta,
+        absDeltaFromHeading: absDelta,
+        visible,
+        qualityLabel,
+        qualityScore,
+      });
+    }
+
+    return results.sort((a, b) => b.qualityScore - a.qualityScore);
+  }, [observer, now, effectiveHeading]);
+
+  const advisorResults = useMemo<VisibilityAdvice[]>(() => {
+    if (!observer) return [];
+
+    const baseTime = roundDateToMinute(new Date(minuteKey * 60_000));
+
+    return SKY_OBJECTS.map((obj) =>
+      makeAdviceForObject({
+        obj,
+        observer,
+        baseTime,
+        minUsefulAltitude,
+      })
+    )
+      .filter((x): x is VisibilityAdvice => x !== null)
+      .sort((a, b) => b.advisorScore - a.advisorScore);
+  }, [observer, minuteKey, minUsefulAltitude]);
+
+  const bestAdvisorResults = useMemo(() => {
+    return advisorResults
+      .filter((a) => a.label !== "Sole")
+      .filter((a) => a.kind !== "dso")
+      .slice(0, 8);
+  }, [advisorResults]);
+
+  const bestDeepSkyResults = useMemo(() => {
+    return advisorResults.filter((a) => a.kind === "dso").slice(0, 10);
+  }, [advisorResults]);
+
+  const selectedSkyTarget = useMemo(() => {
+    if (!selectedTarget) return null;
+    return skyResults.find((r) => r.label === selectedTarget) ?? null;
+  }, [selectedTarget, skyResults]);
+
+  const visibleResults = useMemo(() => {
+    let base = showInvisible ? skyResults : skyResults.filter((r) => r.visible);
+    if (showOnlyDeepSky) base = base.filter((r) => r.kind === "dso");
+    return base;
+  }, [skyResults, showInvisible, showOnlyDeepSky]);
+
+  const radarResults = useMemo(() => {
+    return skyResults
+      .filter((r) => r.visible)
+      .filter((r) => r.deltaFromHeading !== null)
+      .filter((r) => Math.abs(r.deltaFromHeading ?? 999) <= 110)
+      .filter((r) => r.altitude > 0)
+      .slice(0, 14);
+  }, [skyResults]);
+
+  const calibration = useMemo(() => {
+    return getCalibrationState({
+      heading: effectiveHeading,
+      headingAccuracy,
+      headingJitter,
+      compassMode,
+    });
+  }, [effectiveHeading, headingAccuracy, headingJitter, compassMode]);
+
+  function requestLocation() {
+    if (!navigator.geolocation) {
+      setGeoStatus("Geolocalizzazione non supportata");
       return;
     }
 
-    const DeviceOrientation = window.DeviceOrientationEvent as unknown as {
-      requestPermission?: () => Promise<"granted" | "denied">;
-    };
+    setGeoStatus("Richiesta posizione…");
+
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+    }
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setLatitude(pos.coords.latitude);
+        setLongitude(pos.coords.longitude);
+        setGeoAccuracy(pos.coords.accuracy ?? null);
+        setGeoStatus("Posizione attiva");
+      },
+      (err) => {
+        setGeoStatus(`Errore posizione: ${err.message}`);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 3000,
+        timeout: 15000,
+      }
+    );
+  }
+
+  function useManualPosition() {
+    const lat = safeNumber(manualLat);
+    const lon = safeNumber(manualLon);
+
+    if (lat === null || lon === null) {
+      setGeoStatus("Coordinate manuali non valide");
+      return;
+    }
+
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      setGeoStatus("Coordinate fuori range");
+      return;
+    }
+
+    setLatitude(lat);
+    setLongitude(lon);
+    setGeoAccuracy(null);
+    setGeoStatus("Posizione manuale attiva");
+  }
+
+  async function requestCompass() {
+    const OrientationEventClass = window.DeviceOrientationEvent as
+      | (typeof DeviceOrientationEvent & {
+          requestPermission?: () => Promise<"granted" | "denied">;
+        })
+      | undefined;
+
+    if (!OrientationEventClass) {
+      setCompassMode("unavailable");
+      return;
+    }
 
     try {
-      if (typeof DeviceOrientation.requestPermission === "function") {
-        const permission = await DeviceOrientation.requestPermission();
+      if (typeof OrientationEventClass.requestPermission === "function") {
+        const permission = await OrientationEventClass.requestPermission();
 
         if (permission !== "granted") {
-          setOrientation((prev) => ({
-            ...prev,
-            enabled: false,
-            error: "Permesso orientamento negato.",
-          }));
+          setCompassMode("denied");
           return;
         }
       }
 
-      window.addEventListener("deviceorientation", handleOrientation, true);
+      if (!compassListeningRef.current) {
+        window.addEventListener(
+          "deviceorientationabsolute",
+          handleOrientation as EventListener,
+          true
+        );
+        window.addEventListener(
+          "deviceorientation",
+          handleOrientation as EventListener,
+          true
+        );
+        compassListeningRef.current = true;
+      }
 
-      setOrientation((prev) => ({
-        ...prev,
-        enabled: true,
-        error: null,
-      }));
-    } catch (error) {
-      setOrientation((prev) => ({
-        ...prev,
-        enabled: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Errore attivazione bussola.",
-      }));
+      setCompassMode("relative");
+    } catch {
+      setCompassMode("unavailable");
     }
   }
 
   function handleOrientation(event: DeviceOrientationEvent) {
-    const compassEvent = event as DeviceOrientationEvent & {
+    const anyEvent = event as DeviceOrientationEvent & {
       webkitCompassHeading?: number;
+      webkitCompassAccuracy?: number;
     };
 
-    let rawHeading: number | null = null;
+    let nextHeading: number | null = null;
+    let nextAccuracy: number | null = null;
+    let nextMode: CompassMode = "relative";
 
-    if (
-      typeof compassEvent.webkitCompassHeading === "number" &&
-      Number.isFinite(compassEvent.webkitCompassHeading)
-    ) {
-      rawHeading = normalize360(compassEvent.webkitCompassHeading);
-    } else if (typeof event.alpha === "number" && Number.isFinite(event.alpha)) {
-      rawHeading = normalize360(360 - event.alpha);
+    if (typeof anyEvent.webkitCompassHeading === "number") {
+      nextHeading = normalizeDeg(anyEvent.webkitCompassHeading);
+      nextAccuracy =
+        typeof anyEvent.webkitCompassAccuracy === "number"
+          ? anyEvent.webkitCompassAccuracy
+          : null;
+      nextMode = "ios-webkit";
+    } else if (event.absolute && typeof event.alpha === "number") {
+      nextHeading = normalizeDeg(360 - event.alpha);
+      nextAccuracy = null;
+      nextMode = "absolute";
+    } else if (typeof event.alpha === "number") {
+      nextHeading = normalizeDeg(360 - event.alpha);
+      nextAccuracy = null;
+      nextMode = "relative";
     }
 
-    const beta =
-      typeof event.beta === "number" && Number.isFinite(event.beta)
-        ? event.beta
-        : null;
-
-    const gamma =
-      typeof event.gamma === "number" && Number.isFinite(event.gamma)
-        ? event.gamma
-        : null;
-
-    const deviceAltitude = estimateDeviceAltitude(beta);
-
-    if (rawHeading !== null) {
-      headingSamplesRef.current = [
-        ...headingSamplesRef.current,
-        rawHeading,
-      ].slice(-10);
-    }
-
-    const smoothHeading = circularMeanDeg(headingSamplesRef.current);
-
-    setOrientation((prev) => ({
-      ...prev,
-      rawHeading,
-      smoothHeading,
-      beta,
-      gamma,
-      deviceAltitude,
-      error: null,
-    }));
-  }
-
-  function calibrateOnSelectedTarget() {
-    setCalibrationMessage(null);
-
-    if (aimMode !== "telescope") {
-      setCalibrationMessage(
-        "La calibrazione affidabile usa la modalità Telescopio Push-To: punta con il lato corto superiore dell’iPhone verso il target."
-      );
+    if (nextHeading === null) {
+      setCompassMode("unavailable");
       return;
     }
 
-    if (!selectedTarget) {
-      setCalibrationMessage("Nessun target selezionato.");
-      return;
-    }
+    const t = Date.now();
+    samplesRef.current = [
+      ...samplesRef.current,
+      {
+        t,
+        heading: nextHeading,
+      },
+    ].filter((s) => t - s.t < 4000);
 
-    if (isSolarTarget) {
-      setCalibrationMessage(
-        "Per sicurezza il Sole non è calibrabile direttamente. Usa Luna, Giove, Venere o un altro corpo visibile."
-      );
-      return;
-    }
-
-    if (!selectedTarget.calibrationAllowed) {
-      setCalibrationMessage(selectedTarget.observationReason);
-      return;
-    }
-
-    if (orientation.smoothHeading === null) {
-      setCalibrationMessage("Attiva prima la bussola.");
-      return;
-    }
-
-    const nextOffset = normalize180(
-      selectedTarget.azimuth - orientation.smoothHeading
-    );
-
-    setOffsetDeg(nextOffset);
-    localStorage.setItem(OFFSET_KEY, String(nextOffset));
-
-    setCalibrationMessage(
-      `Calibrazione salvata su ${selectedTarget.label}: offset ${nextOffset.toFixed(
-        1
-      )}°. ${POINTER_AXIS}`
-    );
+    setRawHeading(nextHeading);
+    setHeadingAccuracy(nextAccuracy);
+    setHeadingJitter(computeHeadingJitter(samplesRef.current));
+    setCompassMode(nextMode);
   }
 
-  function resetCalibration() {
-    setOffsetDeg(0);
-    localStorage.removeItem(OFFSET_KEY);
-    setCalibrationMessage("Calibrazione azzerata.");
+  function resetCompassOffset() {
+    setHeadingOffset(0);
   }
 
-  async function startCamera() {
-    setCameraError(null);
-
-    if (aimMode !== "camera") {
-      setCameraError("Passa alla modalità Camera AR Preview.");
-      return;
-    }
-
-    if (isGuidanceDisabled) {
-      setCameraError(
-        guidanceDisabledReason ??
-          "Camera disattivata: target non osservabile ora."
-      );
-      return;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("Camera non disponibile. Serve HTTPS o localhost.");
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-        },
-        audio: false,
-      });
-
-      streamRef.current = stream;
-      setCameraActive(true);
-
-      window.setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          void videoRef.current.play();
-        }
-      }, 0);
-    } catch (error) {
-      if (isStandalone) {
-        setCameraError(
-          "Su iPhone in modalità App la camera può essere limitata. Apri Astro Pons in Safari per preview camera completa."
-        );
-      } else {
-        setCameraError(
-          error instanceof Error ? error.message : "Permesso camera negato."
-        );
-      }
-    }
+  function markCurrentDirectionAsNorth() {
+    if (rawHeading === null) return;
+    setHeadingOffset(normalizeDeg(-rawHeading));
   }
 
-  function stopCamera() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-
-    setCameraActive(false);
+  function alignToSelectedTarget() {
+    if (!selectedSkyTarget || rawHeading === null) return;
+    setHeadingOffset(normalizeDeg(selectedSkyTarget.azimuth - rawHeading));
   }
 
-  function statusStyle(kind: StatusKind): CSSProperties {
-    if (kind === "good") return styles.statusGood;
-    if (kind === "medium") return styles.statusMedium;
-    if (kind === "solar") return styles.statusSolar;
-    return styles.statusBad;
-  }
+  const appStyle: CSSProperties = {
+    minHeight: "100vh",
+    background:
+      "radial-gradient(circle at top, #18264a 0%, #0b1020 42%, #05070d 100%)",
+    color: "#f4f7ff",
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif',
+    padding: fieldMode ? "10px" : "18px",
+    boxSizing: "border-box",
+  };
 
-  function aimModeTitle(mode: AimMode): string {
-    if (mode === "telescope") return "Telescopio Push-To";
-    if (mode === "skyfinder") return "Sky Finder";
-    if (mode === "field") return "Field Mode";
-    return "Camera AR Preview";
-  }
+  const shellStyle: CSSProperties = {
+    maxWidth: 980,
+    margin: "0 auto",
+    display: "grid",
+    gap: fieldMode ? 10 : 16,
+  };
 
-  function aimModeDescription(mode: AimMode): string {
-    if (mode === "telescope") {
-      return "Allinea il lato corto superiore dell’iPhone parallelamente all’asse del tubo del telescopio. Muovi il telescopio finché appare TARGET LOCK.";
-    }
+  const cardStyle: CSSProperties = {
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.14)",
+    borderRadius: 22,
+    padding: fieldMode ? 14 : 18,
+    boxShadow: "0 18px 50px rgba(0,0,0,0.28)",
+    backdropFilter: "blur(14px)",
+  };
 
-    if (mode === "skyfinder") {
-      return "Per occhio nudo: la freccia blu indica dove punta il lato corto superiore dell’iPhone. Ruota il corpo/telefono finché la freccia si avvicina al target.";
-    }
+  const buttonStyle: CSSProperties = {
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(255,255,255,0.12)",
+    color: "#fff",
+    borderRadius: 14,
+    padding: "11px 14px",
+    fontSize: 15,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
 
-    if (mode === "field") {
-      return "Schermata da campo: pochi dati, grandi, leggibili al buio. Target, direzione, altezza, freccia e finestra utile.";
-    }
+  const primaryButtonStyle: CSSProperties = {
+    ...buttonStyle,
+    background: "linear-gradient(135deg, #5877ff, #8c5cff)",
+    border: "none",
+  };
 
-    return "Camera solo preview. Il puntamento affidabile resta sul lato corto superiore dell’iPhone: la camera non è ancora un asse ottico calibrato.";
-  }
+  const smallButtonStyle: CSSProperties = {
+    ...buttonStyle,
+    padding: "8px 10px",
+    fontSize: 13,
+    borderRadius: 12,
+  };
+
+  const mutedStyle: CSSProperties = {
+    color: "rgba(244,247,255,0.68)",
+  };
+
+  const calibrationColor = getCalibrationColor(calibration.score);
 
   return (
-    <main style={styles.page}>
-      <section style={styles.header}>
-        <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.4.3 — Compact Field Radar</p>
-      </section>
-
-      <section style={styles.statusCard}>
-        <strong>
-          Lat {gps.lat?.toFixed(4) ?? "—"} / Lon {gps.lon?.toFixed(4) ?? "—"}
-        </strong>
-        <span>
-          {" | "}
-          GPS {gps.accuracy !== null ? `±${gps.accuracy.toFixed(0)}m` : "—"}
-          {" | "}
-          Heading {formatDeg(orientation.smoothHeading)}
-        </span>
-        {gps.error && <p style={styles.error}>{gps.error}</p>}
-      </section>
-
-      {aimMode === "field" && (
-        <FieldModePanel
-          target={selectedTarget}
-          plan={currentSelectedPlan}
-          heading={correctedHeading}
-          fieldMessage={fieldMessage}
-          disabledReason={guidanceDisabledReason}
-          isSolarTarget={isSolarTarget}
-          onEnableCompass={enableCompass}
-        />
-      )}
-
-      {aimMode !== "field" && (
-        <section style={styles.axisCard}>
-          <div style={styles.axisTitle}>Regola fisica dello strumento</div>
-          <div style={styles.axisText}>{POINTER_AXIS}</div>
-        </section>
-      )}
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Modo puntamento</h2>
-
-        <div style={styles.modeGrid}>
-          <button
+    <main style={appStyle}>
+      <section style={shellStyle}>
+        <header
+          style={{
+            display: "grid",
+            gap: 8,
+            paddingTop: "env(safe-area-inset-top)",
+          }}
+        >
+          <div
             style={{
-              ...styles.modeButton,
-              ...(aimMode === "telescope" ? styles.modeButtonActive : {}),
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "center",
             }}
-            onClick={() => setAimMode("telescope")}
           >
-            Telescopio
-          </button>
-
-          <button
-            style={{
-              ...styles.modeButton,
-              ...(aimMode === "skyfinder" ? styles.modeButtonActive : {}),
-            }}
-            onClick={() => setAimMode("skyfinder")}
-          >
-            Sky Finder
-          </button>
-
-          <button
-            style={{
-              ...styles.modeButton,
-              ...(aimMode === "field" ? styles.modeButtonActive : {}),
-            }}
-            onClick={() => setAimMode("field")}
-          >
-            Field Mode
-          </button>
-
-          <button
-            style={{
-              ...styles.modeButton,
-              ...(aimMode === "camera" ? styles.modeButtonActive : {}),
-            }}
-            onClick={() => setAimMode("camera")}
-          >
-            Camera AR
-          </button>
-        </div>
-
-        {aimMode !== "field" && (
-          <div style={styles.modeInfoBox}>
-            <div style={styles.modeInfoTitle}>{aimModeTitle(aimMode)}</div>
-            <div style={styles.modeInfoText}>{aimModeDescription(aimMode)}</div>
-          </div>
-        )}
-      </section>
-
-      <section style={styles.card}>
-        <h2 style={styles.sectionTitle}>Bussola + Calibrazione</h2>
-
-        {aimMode !== "field" && (
-          <div style={styles.calibrationHint}>
-            Calibra tenendo il <strong>lato corto superiore dell’iPhone</strong>{" "}
-            puntato verso il target reale.
-          </div>
-        )}
-
-        {aimMode === "field" ? (
-          <div style={styles.fieldCompassRow}>
-            <button style={styles.primaryButton} onClick={enableCompass}>
-              Attiva bussola
-            </button>
-            <button style={styles.secondaryButton} onClick={resetCalibration}>
-              Reset
-            </button>
-          </div>
-        ) : (
-          <>
-            <div style={styles.grid2}>
-              <Info label="Heading raw" value={formatDeg(orientation.rawHeading)} />
-              <Info
-                label="Heading smooth"
-                value={formatDeg(orientation.smoothHeading)}
-              />
-              <Info label="Offset calibrazione" value={formatDeg(offsetDeg)} />
-              <Info label="Heading corretto" value={formatDeg(correctedHeading)} />
-              <Info
-                label="Pitch stimato"
-                value={formatDeg(orientation.deviceAltitude)}
-              />
-              <Info
-                label="Beta/Gamma"
-                value={`${formatDeg(orientation.beta)} / ${formatDeg(
-                  orientation.gamma
-                )}`}
-              />
+            <div>
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: fieldMode ? 25 : 31,
+                  lineHeight: 1.05,
+                }}
+              >
+                Sky Field
+              </h1>
+              <p style={{ ...mutedStyle, margin: "6px 0 0" }}>
+                V6.7 — Deep Sky Objects
+              </p>
             </div>
 
-            <div style={styles.buttonRow}>
-              <button style={styles.primaryButton} onClick={enableCompass}>
+            <button
+              style={fieldMode ? primaryButtonStyle : buttonStyle}
+              onClick={() => setFieldMode((v) => !v)}
+            >
+              {fieldMode ? "Field ON" : "Field Mode"}
+            </button>
+          </div>
+
+          {fieldMode && (
+            <div
+              style={{
+                borderRadius: 18,
+                padding: "12px 14px",
+                background: calibration.reliable
+                  ? "rgba(124,255,155,0.12)"
+                  : "rgba(255,107,107,0.14)",
+                border: `1px solid ${calibrationColor}`,
+              }}
+            >
+              <strong style={{ color: calibrationColor }}>
+                {calibration.label} — {calibration.score}/100
+              </strong>
+              <div style={{ ...mutedStyle, marginTop: 4 }}>
+                {calibration.warning ?? calibration.detail}
+              </div>
+            </div>
+          )}
+        </header>
+
+        <section
+          style={{
+            display: "grid",
+            gridTemplateColumns: fieldMode ? "1fr" : "repeat(2, minmax(0, 1fr))",
+            gap: fieldMode ? 10 : 16,
+          }}
+        >
+          <div style={cardStyle}>
+            <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>Base</h2>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <button style={primaryButtonStyle} onClick={requestLocation}>
+                Attiva posizione
+              </button>
+              <button style={primaryButtonStyle} onClick={requestCompass}>
                 Attiva bussola
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gap: 7,
+                marginTop: 14,
+                fontSize: 14,
+              }}
+            >
+              <div>
+                <strong>Posizione:</strong>{" "}
+                <span style={mutedStyle}>{geoStatus}</span>
+              </div>
+
+              <div>
+                <strong>Coordinate:</strong>{" "}
+                {latitude !== null && longitude !== null ? (
+                  <span>
+                    {fmt(latitude, 5)}, {fmt(longitude, 5)}
+                  </span>
+                ) : (
+                  <span style={mutedStyle}>—</span>
+                )}
+              </div>
+
+              <div>
+                <strong>Accuratezza GPS:</strong>{" "}
+                {geoAccuracy !== null ? (
+                  <span>{fmt(geoAccuracy, 0)} m</span>
+                ) : (
+                  <span style={mutedStyle}>—</span>
+                )}
+              </div>
+
+              <div>
+                <strong>Ora:</strong>{" "}
+                <span>{now.toLocaleTimeString("it-CH")}</span>
+              </div>
+            </div>
+
+            <details style={{ marginTop: 14 }}>
+              <summary style={{ cursor: "pointer", color: "#dce4ff" }}>
+                Coordinate manuali
+              </summary>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 8,
+                  marginTop: 10,
+                }}
+              >
+                <input
+                  value={manualLat}
+                  onChange={(e) => setManualLat(e.target.value)}
+                  placeholder="Latitudine"
+                  inputMode="decimal"
+                  style={inputStyle}
+                />
+                <input
+                  value={manualLon}
+                  onChange={(e) => setManualLon(e.target.value)}
+                  placeholder="Longitudine"
+                  inputMode="decimal"
+                  style={inputStyle}
+                />
+              </div>
+
+              <button
+                style={{ ...smallButtonStyle, marginTop: 10 }}
+                onClick={useManualPosition}
+              >
+                Usa coordinate manuali
+              </button>
+            </details>
+          </div>
+
+          <div style={cardStyle}>
+            <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>
+              Calibration Pro
+            </h2>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "76px 1fr",
+                gap: 14,
+                alignItems: "center",
+              }}
+            >
+              <div
+                style={{
+                  width: 76,
+                  height: 76,
+                  borderRadius: "50%",
+                  display: "grid",
+                  placeItems: "center",
+                  border: `5px solid ${calibrationColor}`,
+                  color: calibrationColor,
+                  fontWeight: 900,
+                  fontSize: 20,
+                  background: "rgba(0,0,0,0.2)",
+                }}
+              >
+                {calibration.score}
+              </div>
+
+              <div>
+                <strong style={{ color: calibrationColor }}>
+                  {calibration.label}
+                </strong>
+                <p style={{ ...mutedStyle, margin: "5px 0 0" }}>
+                  {calibration.detail}
+                </p>
+              </div>
+            </div>
+
+            {calibration.warning && (
+              <div
+                style={{
+                  marginTop: 14,
+                  padding: 12,
+                  borderRadius: 15,
+                  background: "rgba(255,184,107,0.12)",
+                  border: "1px solid rgba(255,184,107,0.35)",
+                }}
+              >
+                {calibration.warning}
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "grid",
+                gap: 7,
+                marginTop: 14,
+                fontSize: 14,
+              }}
+            >
+              <div>
+                <strong>Heading grezzo:</strong>{" "}
+                {rawHeading !== null ? `${fmt(rawHeading)}°` : "—"}
+              </div>
+
+              <div>
+                <strong>Heading corretto:</strong>{" "}
+                {effectiveHeading !== null ? `${fmt(effectiveHeading)}°` : "—"}
+              </div>
+
+              <div>
+                <strong>Offset manuale:</strong> {fmt(headingOffset)}°
+              </div>
+
+              <div>
+                <strong>Precisione bussola:</strong>{" "}
+                {headingAccuracy !== null ? `${fmt(headingAccuracy)}°` : "—"}
+              </div>
+
+              <div>
+                <strong>Instabilità:</strong>{" "}
+                {headingJitter !== null ? `${fmt(headingJitter)}°` : "—"}
+              </div>
+
+              <div>
+                <strong>Modo sensore:</strong>{" "}
+                <span style={mutedStyle}>{compassMode}</span>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 14,
+              }}
+            >
+              <button style={smallButtonStyle} onClick={resetCompassOffset}>
+                Reset offset
               </button>
 
               <button
-                style={{
-                  ...styles.yellowButton,
-                  ...(!canCalibrateOnSelectedTarget ? styles.disabledButton : {}),
-                }}
-                onClick={calibrateOnSelectedTarget}
-                disabled={!canCalibrateOnSelectedTarget}
+                style={smallButtonStyle}
+                onClick={() => setHeadingOffset((v) => normalizeDeg(v - 5))}
               >
-                {calibrationButtonLabel}
+                -5°
               </button>
 
-              <button style={styles.secondaryButton} onClick={resetCalibration}>
-                Reset calibrazione
+              <button
+                style={smallButtonStyle}
+                onClick={() => setHeadingOffset((v) => normalizeDeg(v + 5))}
+              >
+                +5°
+              </button>
+
+              <button
+                style={smallButtonStyle}
+                disabled={rawHeading === null}
+                onClick={markCurrentDirectionAsNorth}
+              >
+                Sto puntando Nord
               </button>
             </div>
-          </>
-        )}
 
-        {orientation.error && <p style={styles.error}>{orientation.error}</p>}
+            <div
+              style={{
+                marginTop: 14,
+                padding: 12,
+                borderRadius: 16,
+                background: "rgba(255,255,255,0.06)",
+              }}
+            >
+              <strong>Calibrazione su oggetto reale</strong>
+              <p style={{ ...mutedStyle, margin: "6px 0 10px" }}>
+                Punta fisicamente il telefono verso Luna, Venere, una stella o
+                un oggetto riconoscibile e premi “Allinea”.
+              </p>
 
-        {selectedTarget && isGuidanceDisabled && aimMode !== "field" && (
-          <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
-            {guidanceDisabledReason}
-          </div>
-        )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <button
+                  style={smallButtonStyle}
+                  disabled={!selectedSkyTarget || rawHeading === null}
+                  onClick={alignToSelectedTarget}
+                >
+                  Allinea a{" "}
+                  {selectedSkyTarget ? selectedSkyTarget.label : "target"}
+                </button>
 
-        {calibrationMessage && aimMode !== "field" && (
-          <div style={styles.noticeBox}>{calibrationMessage}</div>
-        )}
-      </section>
-
-      {aimMode === "field" ? null : aimMode === "skyfinder" ? (
-        <section style={styles.skyFinderCard}>
-          <h2 style={styles.sectionTitle}>Sky Finder Radar</h2>
-
-          <div style={styles.skyTargetName}>
-            Target: <strong>{selectedTarget?.label ?? "—"}</strong>
-          </div>
-
-          <SkyRadar target={selectedTarget} heading={correctedHeading} />
-
-          <div style={styles.skyGrid}>
-            <div style={styles.skyMetric}>
-              <span>Direzione</span>
-              <strong>{azimuthToCompass(selectedTarget?.azimuth ?? null)}</strong>
-            </div>
-
-            <div style={styles.skyMetric}>
-              <span>Azimut</span>
-              <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
-            </div>
-
-            <div style={styles.skyMetric}>
-              <span>Altezza</span>
-              <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
-            </div>
-
-            <div style={styles.skyMetric}>
-              <span>Fascia cielo</span>
-              <strong>{altitudeBand(selectedTarget?.altitude ?? null)}</strong>
-            </div>
-
-            <div style={styles.skyMetric}>
-              <span>Bussola corretta</span>
-              <strong>{formatDeg(correctedHeading)}</strong>
-            </div>
-
-            <div style={styles.skyMetric}>
-              <span>Scarto direzione</span>
-              <strong>{formatDeg(skyFinderDeltaAz)}</strong>
-            </div>
-          </div>
-
-          <div style={styles.skyAdvice}>
-            <div style={styles.skyAdviceMain}>{skyFinderMessage}</div>
-
-            {selectedTarget?.observableNow ? (
-              <div>
-                Guarda verso{" "}
-                <strong>{azimuthToCompass(selectedTarget.azimuth)}</strong>, a
-                quota <strong>{altitudeBand(selectedTarget.altitude)}</strong>.
+                {selectedSkyTarget && (
+                  <span style={{ ...mutedStyle, alignSelf: "center" }}>
+                    Target: {selectedSkyTarget.label} — Az{" "}
+                    {fmt(selectedSkyTarget.azimuth)}°
+                  </span>
+                )}
               </div>
-            ) : currentSelectedPlan?.firstUsefulTime ? (
-              <div>
-                Prima finestra utile:{" "}
-                <strong>{currentSelectedPlan.firstUsefulTime}</strong>. Momento
-                migliore: <strong>{currentSelectedPlan.bestTime ?? "—"}</strong>.
-              </div>
-            ) : (
-              <div>
-                Nessuna finestra utile nelle prossime {FORECAST_HOURS} ore.
-              </div>
-            )}
-          </div>
-
-          {isSolarTarget && (
-            <div style={styles.sunWarning}>
-              Il Sole resta solo dato astronomico. Non guardare né puntare
-              strumenti ottici verso il Sole senza filtro certificato.
             </div>
-          )}
-        </section>
-      ) : aimMode === "camera" && !isGuidanceDisabled ? (
-        <section style={styles.cameraSafeCard}>
-          <h2 style={styles.sectionTitle}>Camera AR Preview</h2>
-
-          <div style={styles.targetName}>
-            Target: <strong>{selectedTarget?.label ?? "—"}</strong>
-          </div>
-
-          <div style={styles.noticeBox}>
-            Camera solo preview. Il puntamento affidabile resta sul{" "}
-            <strong>lato corto superiore dell’iPhone</strong>. La camera non è
-            ancora asse ottico calibrato.
-          </div>
-
-          <div style={styles.cameraSafeGrid}>
-            <div style={styles.cameraSafeMetric}>
-              <span>Azimut target</span>
-              <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
-            </div>
-
-            <div style={styles.cameraSafeMetric}>
-              <span>Altezza target</span>
-              <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
-            </div>
-
-            <div style={styles.cameraSafeMetric}>
-              <span>Delta Az indicativo</span>
-              <strong>{formatDeg(deltaAz)}</strong>
-            </div>
-
-            <div style={styles.cameraSafeMetric}>
-              <span>Delta Alt indicativo</span>
-              <strong>{formatDeg(deltaAlt)}</strong>
-            </div>
-          </div>
-
-          <div style={styles.cameraSafeWarning}>
-            Per puntamento affidabile usa <strong>Telescopio Push-To</strong>.
-            Allinea sempre il lato corto superiore dell’iPhone all’asse desiderato.
           </div>
         </section>
-      ) : isGuidanceDisabled ? (
-        <section
-          style={isSolarTarget ? styles.solarSafeCard : styles.disabledGuideCard}
-        >
-          <h2 style={styles.sectionTitle}>
-            {isSolarTarget ? "Solar Safe Mode" : "Guida disattivata"}
-          </h2>
 
+        <section style={cardStyle}>
           <div
-            style={isSolarTarget ? styles.solarTitle : styles.disabledGuideTitle}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "center",
+              marginBottom: 12,
+            }}
           >
-            {selectedTarget?.label ?? "Target"} selezionato
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Deep Sky consigliati</h2>
+              <p style={{ ...mutedStyle, margin: "5px 0 0" }}>
+                Oggetti estesi o deboli filtrati per buio, altezza e stagione.
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 7,
+                flexWrap: "wrap",
+                justifyContent: "flex-end",
+              }}
+            >
+              {[10, 15, 20, 25].map((alt) => (
+                <button
+                  key={alt}
+                  style={{
+                    ...smallButtonStyle,
+                    background:
+                      minUsefulAltitude === alt
+                        ? "rgba(255,255,255,0.28)"
+                        : smallButtonStyle.background,
+                  }}
+                  onClick={() => setMinUsefulAltitude(alt)}
+                >
+                  min {alt}°
+                </button>
+              ))}
+            </div>
           </div>
 
-          <p style={styles.solarText}>{guidanceDisabledReason}</p>
-
-          <div style={styles.solarGrid}>
-            <div style={styles.solarMetric}>
-              <span>Azimut</span>
-              <strong>{formatDeg(selectedTarget?.azimuth ?? null)}</strong>
-            </div>
-            <div style={styles.solarMetric}>
-              <span>Altezza</span>
-              <strong>{formatDeg(selectedTarget?.altitude ?? null)}</strong>
-            </div>
-            <div style={styles.solarMetric}>
-              <span>Stato geometrico</span>
-              <strong>
-                {selectedTarget?.visible ? "Sopra orizzonte" : "Sotto"}
-              </strong>
-            </div>
-            <div style={styles.solarMetric}>
-              <span>Osservabilità</span>
-              <strong>{selectedTarget?.observationLabel ?? "—"}</strong>
-            </div>
-          </div>
-
-          {isSolarTarget && (
-            <div style={styles.sunWarning}>
-              Per osservazione solare usa solo filtro solare certificato davanti
-              all’ottica oppure tecniche indirette come proiezione/ombra.
-            </div>
-          )}
-        </section>
-      ) : (
-        <section style={telescopeTargetLock ? styles.lockCard : styles.card}>
-          <h2 style={styles.sectionTitle}>Precision Telescope</h2>
-
-          <div style={styles.targetName}>
-            Target: <strong>{selectedTarget?.label ?? "—"}</strong>
-          </div>
-
-          <div style={styles.noticeBox}>
-            Allinea il <strong>lato corto superiore dell’iPhone</strong>{" "}
-            parallelamente all’asse del tubo del telescopio. Muovi il telescopio
-            finché appare <strong>TARGET LOCK</strong>.
-          </div>
-
-          {telescopeTargetLock ? (
-            <div style={styles.lockText}>✓ TARGET LOCK</div>
-          ) : (
-            <div style={styles.precisionGrid}>
-              <div style={styles.directionBox}>
-                <div style={telescopeAzLock ? styles.okText : styles.bigYellow}>
-                  {directionText(deltaAz)}
-                </div>
-                <div style={styles.metric}>Delta Az: {formatDeg(deltaAz)}</div>
-              </div>
-
-              <div style={styles.directionBox}>
-                <div style={telescopeAltLock ? styles.okText : styles.bigYellow}>
-                  {altitudeText(deltaAlt)}
-                </div>
-                <div style={styles.metric}>Delta Alt: {formatDeg(deltaAlt)}</div>
-              </div>
+          {bestDeepSkyResults.length === 0 && (
+            <div style={mutedStyle}>
+              Attiva la posizione per calcolare gli oggetti deep-sky.
             </div>
           )}
 
-          <div style={styles.lockGrid}>
-            <span style={telescopeAzLock ? styles.greenBadge : styles.redBadge}>
-              Azimut {telescopeAzLock ? "OK" : "NO"}
-            </span>
-            <span style={telescopeAltLock ? styles.greenBadge : styles.redBadge}>
-              Altezza {telescopeAltLock ? "OK" : "NO"}
-            </span>
-          </div>
-        </section>
-      )}
+          <div style={{ display: "grid", gap: 10 }}>
+            {bestDeepSkyResults.map((item) => {
+              const color = getStatusColor(item.status);
+              const firstWindow = item.usefulWindows[0];
 
-      <section style={styles.card}>
-        <label style={styles.label}>Seleziona target</label>
-        <select
-          style={styles.select}
-          value={selectedId}
-          onChange={(event) => setSelectedId(event.target.value)}
-        >
-          {rows.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.label}
-            </option>
-          ))}
-        </select>
-      </section>
-
-      {aimMode !== "field" && (
-        <>
-          <section style={styles.card}>
-            <h2 style={styles.sectionTitle}>Osservazione Pro</h2>
-
-            <p style={styles.smallText}>
-              Migliori target nelle prossime {FORECAST_HOURS} ore. L’app indica
-              prima finestra utile, momento migliore e osservabilità reale.
-            </p>
-
-            {observationPlan.length === 0 ? (
-              <p style={styles.smallText}>Attendo GPS e dati astronomici...</p>
-            ) : (
-              <div style={styles.planList}>
-                {observationPlan.slice(0, 6).map((item) => (
-                  <button
-                    key={item.id}
+              return (
+                <article
+                  key={item.label}
+                  style={{
+                    display: "grid",
+                    gap: 9,
+                    padding: fieldMode ? 14 : 12,
+                    borderRadius: 18,
+                    border: "1px solid rgba(124,255,203,0.24)",
+                    background: "rgba(124,255,203,0.07)",
+                  }}
+                >
+                  <div
                     style={{
-                      ...styles.planItem,
-                      ...(item.id === selectedId ? styles.selectedPlanItem : {}),
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "center",
                     }}
-                    onClick={() => setSelectedId(item.id)}
                   >
-                    <div style={styles.planTop}>
-                      <strong>{item.label}</strong>
-                      <span style={statusStyle(item.statusKind)}>
-                        {item.rating}
+                    <div>
+                      <strong style={{ fontSize: fieldMode ? 20 : 17 }}>
+                        {item.label}
+                      </strong>
+                      {item.catalog && (
+                        <span
+                          style={{
+                            ...mutedStyle,
+                            marginLeft: 8,
+                            fontSize: 13,
+                          }}
+                        >
+                          {item.catalog}
+                        </span>
+                      )}
+                    </div>
+
+                    <span
+                      style={{
+                        color,
+                        fontWeight: 900,
+                        fontSize: fieldMode ? 16 : 14,
+                      }}
+                    >
+                      {item.status}
+                    </span>
+                  </div>
+
+                  <div style={{ color: "#dce4ff" }}>{item.reason}</div>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "8px 13px",
+                      fontSize: fieldMode ? 15 : 14,
+                    }}
+                  >
+                    <span>Ora: {fmt(item.currentAltitude)}°</span>
+                    <span>
+                      Meglio: {formatTime(item.bestTime)} ·{" "}
+                      {fmt(item.bestAltitude)}°
+                    </span>
+                    <span>Az: {fmt(item.bestAzimuth)}°</span>
+                    {typeof item.mag === "number" && (
+                      <span>mag {item.mag}</span>
+                    )}
+                    {item.difficulty && <span>{item.difficulty}</span>}
+                    {item.recommendedTool && <span>{item.recommendedTool}</span>}
+                    {firstWindow && <span>Finestra: {formatWindow(firstWindow)}</span>}
+                  </div>
+
+                  <div style={{ ...mutedStyle, fontSize: 13 }}>
+                    {item.seasonLabel}
+                    {item.note ? ` · ${item.note}` : ""}
+                  </div>
+
+                  <div>
+                    <button
+                      style={smallButtonStyle}
+                      onClick={() => setSelectedTarget(item.label)}
+                    >
+                      Usa come target
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <section style={cardStyle}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "center",
+              marginBottom: 12,
+            }}
+          >
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Visibility Advisor</h2>
+              <p style={{ ...mutedStyle, margin: "5px 0 0" }}>
+                Ranking osservativo per pianeti e stelle nelle prossime{" "}
+                {ADVISOR_SCAN_HOURS} ore.
+              </p>
+            </div>
+          </div>
+
+          {bestAdvisorResults.length === 0 && (
+            <div style={mutedStyle}>
+              Attiva la posizione per calcolare le finestre di osservazione.
+            </div>
+          )}
+
+          <div style={{ display: "grid", gap: 10 }}>
+            {bestAdvisorResults.map((item) => {
+              const color = getStatusColor(item.status);
+              const firstWindow = item.usefulWindows[0];
+
+              return (
+                <article
+                  key={item.label}
+                  style={{
+                    display: "grid",
+                    gap: 9,
+                    padding: fieldMode ? 14 : 12,
+                    borderRadius: 18,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(255,255,255,0.065)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div>
+                      <strong style={{ fontSize: fieldMode ? 20 : 17 }}>
+                        {item.label}
+                      </strong>
+                      <span
+                        style={{
+                          ...mutedStyle,
+                          marginLeft: 8,
+                          fontSize: 13,
+                        }}
+                      >
+                        {item.group}
                       </span>
                     </div>
 
-                    <div style={styles.planGrid}>
-                      <span>Ora: {item.currentLabel}</span>
-                      <span>Alt ora: {formatDeg(item.currentAltitude)}</span>
-                      <span>Prima utile: {item.firstUsefulTime ?? "—"}</span>
-                      <span>Migliore: {item.bestTime ?? "—"}</span>
-                      <span>Alt max: {item.bestAltitude.toFixed(1)}°</span>
-                      <span>Score: {item.score}/100</span>
-                    </div>
+                    <span
+                      style={{
+                        color,
+                        fontWeight: 900,
+                        fontSize: fieldMode ? 16 : 14,
+                      }}
+                    >
+                      {item.status}
+                    </span>
+                  </div>
 
-                    <div style={styles.planAdvice}>{item.advice}</div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
+                  <div style={{ color: "#dce4ff" }}>{item.reason}</div>
 
-          <section style={styles.tableCard}>
-            <div style={styles.tableHeader}>
-              <span>Corpo</span>
-              <span>Azimut</span>
-              <span>Altezza</span>
-              <span>Osservabilità</span>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "8px 13px",
+                      fontSize: fieldMode ? 15 : 14,
+                    }}
+                  >
+                    <span>Ora: {fmt(item.currentAltitude)}°</span>
+                    <span>
+                      Meglio: {formatTime(item.bestTime)} ·{" "}
+                      {fmt(item.bestAltitude)}°
+                    </span>
+                    <span>Az: {fmt(item.bestAzimuth)}°</span>
+                    {firstWindow && <span>Finestra: {formatWindow(firstWindow)}</span>}
+                  </div>
+
+                  <div>
+                    <button
+                      style={smallButtonStyle}
+                      onClick={() => setSelectedTarget(item.label)}
+                    >
+                      Usa come target
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <section style={cardStyle}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "center",
+              marginBottom: 12,
+            }}
+          >
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Radar compatto</h2>
+              <p style={{ ...mutedStyle, margin: "5px 0 0" }}>
+                Oggetti visibili entro circa 110° dalla direzione del telefono.
+              </p>
             </div>
 
-            {rows.map((row) => (
-              <button
-                key={row.id}
+            <div
+              style={{
+                fontSize: 24,
+                fontWeight: 900,
+                color: calibrationColor,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {effectiveHeading !== null ? `${fmt(effectiveHeading, 0)}°` : "—"}
+            </div>
+          </div>
+
+          <div style={radarBoxStyle}>
+            <div style={radarVerticalLineStyle} />
+            <div style={radarHorizontalLineStyle} />
+            <div style={radarForwardStyle}>DAVANTI</div>
+
+            {radarResults.map((obj) => {
+              const delta = obj.deltaFromHeading ?? 0;
+              const x = 50 + (delta / 110) * 45;
+              const y = 88 - Math.min(82, Math.max(0, obj.altitude));
+              const isSelected = selectedTarget === obj.label;
+
+              return (
+                <button
+                  key={obj.label}
+                  onClick={() => setSelectedTarget(obj.label)}
+                  title={obj.label}
+                  style={{
+                    position: "absolute",
+                    left: `${x}%`,
+                    top: `${y}%`,
+                    transform: "translate(-50%, -50%)",
+                    border: isSelected
+                      ? "2px solid #fff"
+                      : "1px solid rgba(255,255,255,0.35)",
+                    background: getKindColor(obj.kind),
+                    color: "#07101e",
+                    borderRadius: 999,
+                    padding: fieldMode ? "7px 9px" : "5px 8px",
+                    fontSize: fieldMode ? 13 : 11,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    boxShadow: "0 8px 20px rgba(0,0,0,0.35)",
+                    maxWidth: 130,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {obj.catalog ?? obj.label}
+                </button>
+              );
+            })}
+
+            {radarResults.length === 0 && (
+              <div
                 style={{
-                  ...styles.tableRow,
-                  ...(row.id === selectedId ? styles.selectedRow : {}),
+                  position: "absolute",
+                  inset: 0,
+                  display: "grid",
+                  placeItems: "center",
+                  color: "rgba(244,247,255,0.62)",
+                  textAlign: "center",
+                  padding: 20,
                 }}
-                onClick={() => setSelectedId(row.id)}
               >
-                <span>{row.label}</span>
-                <span>{row.azimuth.toFixed(1)}°</span>
-                <span>{row.altitude.toFixed(1)}°</span>
-                <span style={statusStyle(row.statusKind)}>
-                  {row.observationLabel}
-                </span>
-              </button>
-            ))}
-          </section>
+                Attiva posizione e bussola.
+                <br />
+                Se non compare nulla, ruota lentamente il telefono.
+              </div>
+            )}
+          </div>
+        </section>
 
-          <section
-            style={
-              aimMode === "camera" && !isGuidanceDisabled
-                ? styles.arCard
-                : styles.disabledArCard
-            }
+        <section style={cardStyle}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "center",
+              marginBottom: 12,
+            }}
           >
-            <h2 style={styles.sectionTitle}>Camera AR Preview</h2>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Oggetti</h2>
+              <p style={{ ...mutedStyle, margin: "5px 0 0" }}>
+                Catalogo ordinato per visibilità, altezza e vicinanza alla
+                direzione di puntamento.
+              </p>
+            </div>
 
-            {aimMode !== "camera" ? (
-              <>
-                <p style={styles.solarText}>
-                  Camera disattivata perché il modo attivo è{" "}
-                  <strong>{aimModeTitle(aimMode)}</strong>.
-                </p>
-                <div style={styles.noticeBox}>
-                  Passa a <strong>Camera AR</strong> per usare la preview video.
-                </div>
-              </>
-            ) : isGuidanceDisabled ? (
-              <>
-                <p style={styles.solarText}>
-                  Camera AR disattivata per questo target.
-                </p>
-                <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
-                  {guidanceDisabledReason}
-                </div>
-              </>
-            ) : (
-              <>
-                <p style={styles.smallText}>
-                  Camera posteriore + overlay indicativo. Nessun TARGET LOCK viene
-                  dichiarato in questa modalità.
-                </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                style={{
+                  ...smallButtonStyle,
+                  background: showOnlyDeepSky
+                    ? "rgba(124,255,203,0.22)"
+                    : smallButtonStyle.background,
+                }}
+                onClick={() => setShowOnlyDeepSky((v) => !v)}
+              >
+                {showOnlyDeepSky ? "Tutti" : "Solo Deep Sky"}
+              </button>
 
-                <div style={styles.noticeBox}>
-                  Puntamento sempre riferito al{" "}
-                  <strong>lato corto superiore dell’iPhone</strong>. La camera è
-                  solo una preview.
-                </div>
+              <button
+                style={smallButtonStyle}
+                onClick={() => setShowInvisible((v) => !v)}
+              >
+                {showInvisible ? "Solo visibili" : "Mostra tutti"}
+              </button>
+            </div>
+          </div>
 
-                {isStandalone && (
-                  <div style={styles.noticeBox}>
-                    Modalità App iPhone rilevata. Se la camera non parte, apri
-                    Astro Pons in Safari per preview camera completa.
-                  </div>
-                )}
+          <div style={{ display: "grid", gap: 10 }}>
+            {visibleResults.length === 0 && (
+              <div style={{ ...mutedStyle }}>
+                Nessun oggetto calcolabile: attiva prima la posizione.
+              </div>
+            )}
 
-                <div style={styles.buttonRow}>
-                  <button style={styles.primaryButton} onClick={startCamera}>
-                    Avvia AR Camera
-                  </button>
-                  <button style={styles.secondaryButton} onClick={stopCamera}>
-                    Stop Camera
-                  </button>
-                </div>
+            {visibleResults.map((obj) => {
+              const isSelected = selectedTarget === obj.label;
 
-                {cameraError && <p style={styles.error}>{cameraError}</p>}
+              return (
+                <article
+                  key={obj.label}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: fieldMode ? "1fr" : "1fr auto",
+                    gap: 10,
+                    padding: fieldMode ? 14 : 12,
+                    borderRadius: 18,
+                    border: isSelected
+                      ? "1px solid rgba(255,255,255,0.9)"
+                      : "1px solid rgba(255,255,255,0.12)",
+                    background:
+                      obj.kind === "dso"
+                        ? "rgba(124,255,203,0.055)"
+                        : obj.visible
+                          ? "rgba(255,255,255,0.07)"
+                          : "rgba(255,255,255,0.035)",
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 8,
+                        alignItems: "baseline",
+                      }}
+                    >
+                      <strong style={{ fontSize: fieldMode ? 20 : 17 }}>
+                        {obj.label}
+                      </strong>
 
-                <div style={styles.arFrame}>
-                  {cameraActive ? (
-                    <video
-                      ref={videoRef}
-                      playsInline
-                      muted
-                      style={styles.arVideo}
-                    />
-                  ) : (
-                    <div style={styles.cameraPlaceholder}>Camera non attiva</div>
-                  )}
+                      {obj.catalog && (
+                        <span style={{ ...mutedStyle, fontSize: 13 }}>
+                          {obj.catalog}
+                        </span>
+                      )}
 
-                  <div style={styles.arOverlay}>
-                    <div style={styles.reticle}>
-                      <div style={styles.reticleH} />
-                      <div style={styles.reticleV} />
+                      <span style={{ ...mutedStyle, fontSize: 13 }}>
+                        {obj.group}
+                      </span>
+
+                      {typeof obj.mag === "number" && (
+                        <span style={{ ...mutedStyle, fontSize: 13 }}>
+                          mag {obj.mag}
+                        </span>
+                      )}
                     </div>
 
-                    {arMarker && (
-                      <div
-                        style={{
-                          ...styles.marker,
-                          ...(arMarker.inside ? {} : styles.markerOffscreen),
-                          left: `${arMarker.x}%`,
-                          top: `${arMarker.y}%`,
-                        }}
-                      >
-                        <div style={styles.markerDot} />
-                        <div style={styles.markerLabel}>
-                          {selectedTarget?.label ?? "Target"}
-                        </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: "8px 13px",
+                        marginTop: 8,
+                        fontSize: fieldMode ? 15 : 14,
+                      }}
+                    >
+                      <span>Alt {fmt(obj.altitude)}°</span>
+                      <span>Az {fmt(obj.azimuth)}°</span>
+                      <span>{obj.qualityLabel}</span>
+                      {obj.difficulty && <span>{obj.difficulty}</span>}
+                      {obj.recommendedTool && <span>{obj.recommendedTool}</span>}
+                      <span>
+                        {obj.deltaFromHeading !== null
+                          ? `${directionLabel(obj.deltaFromHeading)} · ${fmt(
+                              obj.deltaFromHeading
+                            )}°`
+                          : "direzione telefono non attiva"}
+                      </span>
+                    </div>
+
+                    {obj.note && (
+                      <div style={{ ...mutedStyle, marginTop: 7, fontSize: 13 }}>
+                        {seasonLabel(obj)} · {obj.note}
                       </div>
                     )}
+                  </div>
 
-                    <div style={styles.arInstruction}>
-                      <span style={styles.arPreviewText}>Preview indicativa</span>
-                      <span>Asse camera non calibrato</span>
-                      <span>Punta reale: lato superiore iPhone</span>
-                    </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      justifyContent: fieldMode ? "flex-start" : "flex-end",
+                    }}
+                  >
+                    <button
+                      style={{
+                        ...smallButtonStyle,
+                        background: isSelected
+                          ? "rgba(255,255,255,0.28)"
+                          : smallButtonStyle.background,
+                      }}
+                      onClick={() => setSelectedTarget(obj.label)}
+                    >
+                      Target
+                    </button>
                   </div>
-                </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
 
-                <div style={styles.arInfoGrid}>
-                  <div style={styles.arMiniMetric}>
-                    Delta Az indicativo {formatDeg(deltaAz)}
-                  </div>
-                  <div style={styles.arMiniMetric}>
-                    Delta Alt indicativo {formatDeg(deltaAlt)}
-                  </div>
-                  <div style={styles.arMiniMetric}>
-                    Marker {arMarker?.inside ? "nel frame" : "fuori frame"}
-                  </div>
-                </div>
-              </>
-            )}
-          </section>
-        </>
-      )}
+        <section style={cardStyle}>
+          <h2 style={{ margin: "0 0 10px", fontSize: 20 }}>
+            Note pratiche Deep Sky
+          </h2>
+
+          <div style={{ display: "grid", gap: 8, color: "#dce4ff" }}>
+            <div>
+              1. Per oggetti deep-sky l’altezza non basta: serve anche buio
+              reale. Le galassie e le nebulose diffuse soffrono moltissimo la
+              luce urbana.
+            </div>
+            <div>
+              2. Le Pleiadi, Andromeda, Orione, Presepe e Doppio Ammasso sono i
+              primi oggetti “facili” da usare per imparare il cielo.
+            </div>
+            <div>
+              3. M57, M13, M33 e NGC 7000 sono più selettivi: spesso serve
+              telescopio, cielo scuro o esperienza.
+            </div>
+            <div>
+              4. Il radar ti porta in zona, ma per il deep-sky devi poi usare
+              riconoscimento stellare, binocolo o cercatore.
+            </div>
+            <div>
+              5. Se la Luna è molto luminosa, molti oggetti deep-sky diventano
+              peggiori anche se l’app li calcola geometricamente visibili.
+            </div>
+          </div>
+        </section>
+      </section>
     </main>
   );
 }
 
-function FieldModePanel({
-  target,
-  plan,
-  heading,
-  fieldMessage,
-  disabledReason,
-  isSolarTarget,
-  onEnableCompass,
-}: {
-  target: BodyRow | null;
-  plan: ObservationItem | null;
-  heading: number | null;
-  fieldMessage: string;
-  disabledReason: string | null;
-  isSolarTarget: boolean;
-  onEnableCompass: () => void;
-}) {
-  const color = statusColorValue(target?.statusKind);
-  const observable = target?.observableNow ?? false;
-
-  const fieldStatusText = isSolarTarget
-    ? "SOLAR SAFE"
-    : observable
-      ? "OSSERVABILE"
-      : target?.observationLabel?.toUpperCase() ?? "—";
-
-  const fieldPriorityText = isSolarTarget
-    ? "NON PUNTARE IL SOLE"
-    : fieldMessage;
-
-  return (
-    <section style={styles.fieldCard}>
-      <div style={styles.fieldHeader}>FIELD MODE</div>
-
-      <div style={styles.fieldTarget}>{target?.label?.toUpperCase() ?? "—"}</div>
-
-      <div style={{ ...styles.fieldStatus, color }}>{fieldStatusText}</div>
-
-      <button style={styles.fieldQuickCompassButton} onClick={onEnableCompass}>
-        ATTIVA BUSSOLA
-      </button>
-
-      {!observable && (
-        <div style={isSolarTarget ? styles.fieldSolarPriority : styles.fieldPriorityWarning}>
-          {fieldPriorityText}
-        </div>
-      )}
-
-      <div style={styles.fieldTimeGrid}>
-        <div style={styles.fieldTimeBox}>
-          <span style={styles.fieldTimeLabel}>ORA</span>
-          <strong style={styles.fieldTimeValue}>
-            {target?.observableNow ? "SÌ" : "NO"}
-          </strong>
-        </div>
-
-        <div style={styles.fieldTimeBox}>
-          <span style={styles.fieldTimeLabel}>PRIMA UTILE</span>
-          <strong style={styles.fieldTimeValue}>
-            {plan?.firstUsefulTime ?? "—"}
-          </strong>
-        </div>
-
-        <div style={styles.fieldTimeBox}>
-          <span style={styles.fieldTimeLabel}>MIGLIORE</span>
-          <strong style={styles.fieldTimeValue}>{plan?.bestTime ?? "—"}</strong>
-        </div>
-      </div>
-
-      <FieldRadar target={target} heading={heading} />
-
-      <div style={styles.fieldMainGrid}>
-        <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
-          <span>{observable ? "GUARDA" : "DIREZIONE"}</span>
-          <strong>{azimuthToCompass(target?.azimuth ?? null).toUpperCase()}</strong>
-        </div>
-
-        <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
-          <span>ALTEZZA</span>
-          <strong>{fieldAltitudeBand(target?.altitude ?? null)}</strong>
-        </div>
-      </div>
-
-      {observable && (
-        <div style={styles.fieldInstructionGood}>{fieldMessage}</div>
-      )}
-
-      {disabledReason && (
-        <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
-          {disabledReason}
-        </div>
-      )}
-
-      <div style={styles.fieldAxis}>
-        Freccia blu = lato corto superiore dell’iPhone
-      </div>
-    </section>
-  );
-}
-
-function SkyRadar({
-  target,
-  heading,
-}: {
-  target: BodyRow | null;
-  heading: number | null;
-}) {
-  const point = radarPointFromAzAlt(
-    target?.azimuth ?? null,
-    target?.altitude ?? null
-  );
-
-  const color = statusColorValue(target?.statusKind);
-
-  return (
-    <div style={styles.radarWrap}>
-      <div style={styles.radar}>
-        <div style={styles.radarRingOuter} />
-        <div style={styles.radarRingMid} />
-        <div style={styles.radarRingInner} />
-
-        <div style={styles.radarAxisVertical} />
-        <div style={styles.radarAxisHorizontal} />
-
-        <div style={styles.radarLabelN}>N</div>
-        <div style={styles.radarLabelE}>E</div>
-        <div style={styles.radarLabelS}>S</div>
-        <div style={styles.radarLabelW}>O</div>
-
-        <div style={styles.radarZenith}>Zenit</div>
-        <div style={styles.radarHorizon}>orizzonte</div>
-
-        {heading !== null && (
-          <div
-            style={{
-              ...styles.radarHeadingLine,
-              transform: `translate(-50%, -100%) rotate(${heading}deg)`,
-            }}
-          />
-        )}
-
-        {point && target && (
-          <>
-            <div
-              style={{
-                ...styles.radarTargetDot,
-                left: `${point.x}%`,
-                top: `${point.y}%`,
-                background: color,
-                boxShadow: `0 0 22px ${color}`,
-              }}
-            />
-            <div
-              style={{
-                ...styles.radarTargetLabel,
-                left: `${point.x}%`,
-                top: `${point.y}%`,
-                color,
-              }}
-            >
-              {target.label}
-            </div>
-          </>
-        )}
-      </div>
-
-      <div style={styles.radarPointerLegend}>
-        Freccia blu = lato corto superiore dell’iPhone.
-      </div>
-
-      <div style={styles.radarLegend}>
-        <span>
-          <strong>Centro</strong> = alto
-        </span>
-        <span>
-          <strong>Bordo</strong> = basso/orizzonte
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function FieldRadar({
-  target,
-  heading,
-}: {
-  target: BodyRow | null;
-  heading: number | null;
-}) {
-  const point = radarPointFromAzAlt(
-    target?.azimuth ?? null,
-    target?.altitude ?? null
-  );
-
-  const color = statusColorValue(target?.statusKind);
-
-  return (
-    <div style={styles.fieldRadar}>
-      <div style={styles.fieldRadarRingOuter} />
-      <div style={styles.fieldRadarRingMid} />
-      <div style={styles.fieldRadarRingInner} />
-
-      <div style={styles.fieldRadarAxisVertical} />
-      <div style={styles.fieldRadarAxisHorizontal} />
-
-      <div style={styles.fieldRadarN}>N</div>
-      <div style={styles.fieldRadarE}>E</div>
-      <div style={styles.fieldRadarS}>S</div>
-      <div style={styles.fieldRadarW}>O</div>
-
-      {heading !== null && (
-        <div
-          style={{
-            ...styles.fieldRadarHeading,
-            transform: `translate(-50%, -100%) rotate(${heading}deg)`,
-          }}
-        />
-      )}
-
-      {point && target && (
-        <>
-          <div
-            style={{
-              ...styles.fieldRadarDot,
-              left: `${point.x}%`,
-              top: `${point.y}%`,
-              background: color,
-              boxShadow: `0 0 30px ${color}`,
-            }}
-          />
-          <div
-            style={{
-              ...styles.fieldRadarLabel,
-              left: `${point.x}%`,
-              top: `${point.y}%`,
-              color,
-            }}
-          >
-            {target.label}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Info({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={styles.infoBox}>
-      <div style={styles.infoLabel}>{label}</div>
-      <div style={styles.infoValue}>{value}</div>
-    </div>
-  );
-}
-
-const styles: Record<string, CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    background: "#05081f",
-    color: "#f3f5ff",
-    padding:
-      "calc(56px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom))",
-    scrollPaddingTop: "calc(72px + env(safe-area-inset-top))",
-    fontFamily:
-      '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  },
-  header: {
-    textAlign: "center",
-    marginBottom: 24,
-  },
-  title: {
-    color: "#ffd400",
-    fontSize: 42,
-    lineHeight: 1,
-    margin: "0 0 10px",
-    fontWeight: 900,
-  },
-  subtitle: {
-    color: "#a9adbd",
-    fontSize: 18,
-    margin: 0,
-    fontWeight: 700,
-  },
-  statusCard: {
-    background: "#1b203a",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 18,
-    textAlign: "center",
-    color: "#e6e8f2",
-    fontSize: 16,
-  },
-  axisCard: {
-    background: "rgba(0,183,255,0.10)",
-    border: "1px solid rgba(0,183,255,0.42)",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 18,
-    textAlign: "center",
-  },
-  axisTitle: {
-    color: "#00b7ff",
-    fontSize: 17,
-    fontWeight: 1000,
-    marginBottom: 6,
-  },
-  axisText: {
-    color: "#ffffff",
-    fontSize: 17,
-    fontWeight: 900,
-    lineHeight: 1.35,
-  },
-  card: {
-    background: "#1b203a",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    boxShadow: "0 12px 32px rgba(0,0,0,0.2)",
-  },
-  lockCard: {
-    background: "#102b21",
-    border: "2px solid #15ff31",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    boxShadow: "0 0 30px rgba(21,255,49,0.12)",
-  },
-  cameraSafeCard: {
-    background: "#10202d",
-    border: "2px solid rgba(0,183,255,0.55)",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    boxShadow: "0 0 28px rgba(0,183,255,0.1)",
-  },
-  cameraSafeGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-    marginTop: 14,
-  },
-  cameraSafeMetric: {
-    background: "#11162c",
-    borderRadius: 12,
-    padding: 12,
-    display: "grid",
-    gap: 4,
-    textAlign: "center",
-  },
-  cameraSafeWarning: {
-    background: "rgba(255,212,0,0.12)",
-    color: "#ffd400",
-    border: "1px solid rgba(255,212,0,0.35)",
-    borderRadius: 12,
-    padding: 12,
-    fontWeight: 900,
-    marginTop: 14,
-    lineHeight: 1.4,
-    textAlign: "center",
-  },
-  modeGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 10,
-  },
-  modeButton: {
-    background: "#11162c",
-    color: "#ffffff",
-    border: "1px solid rgba(255,255,255,0.12)",
-    borderRadius: 12,
-    padding: "14px 12px",
-    fontSize: 17,
-    fontWeight: 900,
-  },
-  modeButtonActive: {
-    background: "#ffd400",
-    color: "#090909",
-    border: "1px solid rgba(255,212,0,0.8)",
-  },
-  modeInfoBox: {
-    marginTop: 14,
-    background: "#11162c",
-    borderRadius: 14,
-    padding: 14,
-    border: "1px solid rgba(255,255,255,0.08)",
-  },
-  modeInfoTitle: {
-    color: "#ffd400",
-    fontSize: 20,
-    fontWeight: 1000,
-    marginBottom: 8,
-    textAlign: "center",
-  },
-  modeInfoText: {
-    color: "#d8dbea",
-    fontSize: 15,
-    lineHeight: 1.45,
-    fontWeight: 800,
-    textAlign: "center",
-  },
-  calibrationHint: {
-    background: "rgba(255,212,0,0.10)",
-    border: "1px solid rgba(255,212,0,0.28)",
-    color: "#ffd400",
-    borderRadius: 12,
-    padding: 12,
-    fontWeight: 900,
-    textAlign: "center",
-    lineHeight: 1.35,
-    marginBottom: 14,
-  },
-  fieldCompassRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 12,
-  },
-  skyFinderCard: {
-    background: "#101d2d",
-    border: "2px solid rgba(0,183,255,0.45)",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-  },
-  skyTargetName: {
-    textAlign: "center",
-    fontSize: 24,
-    marginBottom: 14,
-  },
-  skyGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-    marginBottom: 14,
-  },
-  skyMetric: {
-    background: "#11162c",
-    borderRadius: 12,
-    padding: 12,
-    display: "grid",
-    gap: 4,
-    textAlign: "center",
-  },
-  skyAdvice: {
-    background: "rgba(255,212,0,0.12)",
-    border: "1px solid rgba(255,212,0,0.35)",
-    color: "#ffd400",
-    borderRadius: 14,
-    padding: 14,
-    lineHeight: 1.45,
-    fontWeight: 900,
-    textAlign: "center",
-  },
-  skyAdviceMain: {
-    fontSize: 18,
-    marginBottom: 8,
-  },
-  radarWrap: {
-    marginBottom: 16,
-  },
-  radar: {
-    position: "relative",
-    width: "min(100%, 340px)",
-    aspectRatio: "1 / 1",
-    margin: "0 auto 10px",
-    borderRadius: "50%",
-    background:
-      "radial-gradient(circle at center, rgba(0,183,255,0.18), rgba(5,8,31,0.92) 62%, rgba(5,8,31,1))",
-    border: "2px solid rgba(0,183,255,0.55)",
-    overflow: "hidden",
-    boxShadow: "0 0 28px rgba(0,183,255,0.18)",
-  },
-  radarRingOuter: {
-    position: "absolute",
-    inset: "8%",
-    borderRadius: "50%",
-    border: "1px solid rgba(255,255,255,0.25)",
-  },
-  radarRingMid: {
-    position: "absolute",
-    inset: "26%",
-    borderRadius: "50%",
-    border: "1px solid rgba(255,255,255,0.18)",
-  },
-  radarRingInner: {
-    position: "absolute",
-    inset: "42%",
-    borderRadius: "50%",
-    border: "1px solid rgba(255,255,255,0.14)",
-  },
-  radarAxisVertical: {
-    position: "absolute",
-    left: "50%",
-    top: "7%",
-    bottom: "7%",
-    width: 1,
-    background: "rgba(255,255,255,0.18)",
-  },
-  radarAxisHorizontal: {
-    position: "absolute",
-    top: "50%",
-    left: "7%",
-    right: "7%",
-    height: 1,
-    background: "rgba(255,255,255,0.18)",
-  },
-  radarLabelN: {
-    position: "absolute",
-    top: 8,
-    left: "50%",
-    transform: "translateX(-50%)",
-    color: "#ffffff",
-    fontWeight: 1000,
-  },
-  radarLabelE: {
-    position: "absolute",
-    right: 10,
-    top: "50%",
-    transform: "translateY(-50%)",
-    color: "#ffffff",
-    fontWeight: 1000,
-  },
-  radarLabelS: {
-    position: "absolute",
-    bottom: 8,
-    left: "50%",
-    transform: "translateX(-50%)",
-    color: "#ffffff",
-    fontWeight: 1000,
-  },
-  radarLabelW: {
-    position: "absolute",
-    left: 10,
-    top: "50%",
-    transform: "translateY(-50%)",
-    color: "#ffffff",
-    fontWeight: 1000,
-  },
-  radarZenith: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    transform: "translate(-50%, -50%)",
-    color: "rgba(255,255,255,0.45)",
-    fontSize: 12,
-    fontWeight: 900,
-  },
-  radarHorizon: {
-    position: "absolute",
-    left: "50%",
-    bottom: 30,
-    transform: "translateX(-50%)",
-    color: "rgba(255,255,255,0.45)",
-    fontSize: 12,
-    fontWeight: 900,
-  },
-  radarHeadingLine: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    width: 4,
-    height: "43%",
-    transformOrigin: "50% 100%",
-    background: "#00b7ff",
-    borderRadius: 999,
-    boxShadow: "0 0 18px rgba(0,183,255,0.8)",
-  },
-  radarTargetDot: {
-    position: "absolute",
-    width: 20,
-    height: 20,
-    borderRadius: "50%",
-    transform: "translate(-50%, -50%)",
-    border: "3px solid rgba(255,255,255,0.9)",
-    zIndex: 4,
-  },
-  radarTargetLabel: {
-    position: "absolute",
-    transform: "translate(-50%, 14px)",
-    fontSize: 14,
-    fontWeight: 1000,
-    textShadow: "0 2px 8px rgba(0,0,0,0.9)",
-    zIndex: 4,
-  },
-  radarPointerLegend: {
-    background: "rgba(0,183,255,0.12)",
-    border: "1px solid rgba(0,183,255,0.35)",
-    color: "#00b7ff",
-    borderRadius: 12,
-    padding: 10,
-    fontSize: 14,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 8,
-  },
-  radarLegend: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 8,
-    color: "#a9adbd",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  fieldCard: {
-    background: "#050b18",
-    border: "2px solid rgba(0,183,255,0.65)",
-    borderRadius: 18,
-    padding: 16,
-    marginBottom: 18,
-    boxShadow: "0 0 34px rgba(0,183,255,0.14)",
-  },
-  fieldHeader: {
-    color: "#00b7ff",
-    textAlign: "center",
-    fontSize: 16,
-    fontWeight: 1000,
-    letterSpacing: 2,
-    marginBottom: 6,
-  },
-  fieldTarget: {
-    color: "#ffffff",
-    textAlign: "center",
-    fontSize: 44,
-    lineHeight: 1,
-    fontWeight: 1000,
-    marginBottom: 6,
-  },
-  fieldStatus: {
-    textAlign: "center",
-    fontSize: 24,
-    fontWeight: 1000,
-    marginBottom: 12,
-  },
-  fieldQuickCompassButton: {
-    width: "100%",
-    background: "#00b7ff",
-    color: "#00111a",
-    border: 0,
-    borderRadius: 14,
-    padding: "14px 14px",
-    fontSize: 20,
-    fontWeight: 1000,
-    marginBottom: 14,
-  },
-  fieldPriorityWarning: {
-    background: "rgba(255,102,102,0.14)",
-    color: "#ff6666",
-    border: "1px solid rgba(255,102,102,0.45)",
-    borderRadius: 16,
-    padding: 14,
-    fontSize: 30,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  fieldSolarPriority: {
-    background: "rgba(255,90,90,0.18)",
-    color: "#ff7777",
-    border: "1px solid rgba(255,90,90,0.55)",
-    borderRadius: 16,
-    padding: 14,
-    fontSize: 28,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  fieldTimeGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr 1fr",
-    gap: 8,
-    marginBottom: 12,
-  },
-  fieldTimeBox: {
-    background: "#11162c",
-    borderRadius: 12,
-    padding: "10px 6px",
-    display: "grid",
-    gap: 4,
-    textAlign: "center",
-    minWidth: 0,
-  },
-  fieldTimeLabel: {
-    color: "#a9adbd",
-    fontSize: 11,
-    fontWeight: 1000,
-    letterSpacing: 0.8,
-    whiteSpace: "nowrap",
-  },
-  fieldTimeValue: {
-    color: "#ffffff",
-    fontSize: 19,
-    fontWeight: 1000,
-  },
-  fieldRadar: {
-    position: "relative",
-    width: "min(100%, 292px)",
-    aspectRatio: "1 / 1",
-    margin: "0 auto 12px",
-    borderRadius: "50%",
-    background:
-      "radial-gradient(circle at center, rgba(0,183,255,0.20), rgba(5,8,31,0.94) 63%, rgba(5,8,31,1))",
-    border: "2px solid rgba(0,183,255,0.75)",
-    overflow: "hidden",
-    boxShadow: "0 0 30px rgba(0,183,255,0.20)",
-  },
-  fieldRadarRingOuter: {
-    position: "absolute",
-    inset: "7%",
-    borderRadius: "50%",
-    border: "2px solid rgba(255,255,255,0.25)",
-  },
-  fieldRadarRingMid: {
-    position: "absolute",
-    inset: "28%",
-    borderRadius: "50%",
-    border: "1px solid rgba(255,255,255,0.18)",
-  },
-  fieldRadarRingInner: {
-    position: "absolute",
-    inset: "44%",
-    borderRadius: "50%",
-    border: "1px solid rgba(255,255,255,0.14)",
-  },
-  fieldRadarAxisVertical: {
-    position: "absolute",
-    left: "50%",
-    top: "7%",
-    bottom: "7%",
-    width: 1,
-    background: "rgba(255,255,255,0.2)",
-  },
-  fieldRadarAxisHorizontal: {
-    position: "absolute",
-    top: "50%",
-    left: "7%",
-    right: "7%",
-    height: 1,
-    background: "rgba(255,255,255,0.2)",
-  },
-  fieldRadarN: {
-    position: "absolute",
-    top: 6,
-    left: "50%",
-    transform: "translateX(-50%)",
-    color: "#ffffff",
-    fontSize: 18,
-    fontWeight: 1000,
-  },
-  fieldRadarE: {
-    position: "absolute",
-    right: 8,
-    top: "50%",
-    transform: "translateY(-50%)",
-    color: "#ffffff",
-    fontSize: 18,
-    fontWeight: 1000,
-  },
-  fieldRadarS: {
-    position: "absolute",
-    bottom: 6,
-    left: "50%",
-    transform: "translateX(-50%)",
-    color: "#ffffff",
-    fontSize: 18,
-    fontWeight: 1000,
-  },
-  fieldRadarW: {
-    position: "absolute",
-    left: 8,
-    top: "50%",
-    transform: "translateY(-50%)",
-    color: "#ffffff",
-    fontSize: 18,
-    fontWeight: 1000,
-  },
-  fieldRadarHeading: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    width: 5,
-    height: "43%",
-    transformOrigin: "50% 100%",
-    background: "#00b7ff",
-    borderRadius: 999,
-    boxShadow: "0 0 22px rgba(0,183,255,0.95)",
-  },
-  fieldRadarDot: {
-    position: "absolute",
-    width: 28,
-    height: 28,
-    borderRadius: "50%",
-    transform: "translate(-50%, -50%)",
-    border: "4px solid rgba(255,255,255,0.96)",
-    zIndex: 5,
-  },
-  fieldRadarLabel: {
-    position: "absolute",
-    transform: "translate(-50%, 20px)",
-    fontSize: 16,
-    fontWeight: 1000,
-    textShadow: "0 2px 10px rgba(0,0,0,1)",
-    zIndex: 6,
-  },
-  fieldMainGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-    marginBottom: 10,
-  },
-  fieldBigBox: {
-    background: "#11162c",
-    borderRadius: 14,
-    padding: 12,
-    textAlign: "center",
-    display: "grid",
-    gap: 5,
-  },
-  fieldBigBoxSecondary: {
-    background: "rgba(17,22,44,0.72)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 14,
-    padding: 12,
-    textAlign: "center",
-    display: "grid",
-    gap: 5,
-    opacity: 0.78,
-  },
-  fieldInstructionGood: {
-    background: "rgba(21,255,49,0.12)",
-    color: "#15ff31",
-    border: "1px solid rgba(21,255,49,0.35)",
-    borderRadius: 16,
-    padding: 14,
-    fontSize: 28,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 10,
-  },
-  fieldInstructionBad: {
-    background: "rgba(255,102,102,0.12)",
-    color: "#ff6666",
-    border: "1px solid rgba(255,102,102,0.35)",
-    borderRadius: 16,
-    padding: 16,
-    fontSize: 28,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  fieldAxis: {
-    background: "rgba(0,183,255,0.10)",
-    color: "#00b7ff",
-    border: "1px solid rgba(0,183,255,0.35)",
-    borderRadius: 14,
-    padding: 10,
-    fontSize: 14,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginTop: 10,
-  },
-  solarSafeCard: {
-    background: "#21192c",
-    border: "2px solid rgba(255,90,90,0.45)",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    boxShadow: "0 0 30px rgba(255,90,90,0.08)",
-  },
-  disabledGuideCard: {
-    background: "#171b33",
-    border: "2px solid rgba(255,212,0,0.35)",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-  },
-  solarTitle: {
-    color: "#ff7777",
-    fontSize: 30,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  disabledGuideTitle: {
-    color: "#ffd400",
-    fontSize: 28,
-    fontWeight: 1000,
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  solarText: {
-    color: "#e8eaf5",
-    fontSize: 16,
-    lineHeight: 1.45,
-    fontWeight: 800,
-    textAlign: "center",
-  },
-  solarGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 10,
-    marginTop: 14,
-    marginBottom: 14,
-  },
-  solarMetric: {
-    background: "#11162c",
-    borderRadius: 12,
-    padding: 12,
-    display: "grid",
-    gap: 4,
-    textAlign: "center",
-  },
-  sectionTitle: {
-    margin: "0 0 16px",
-    fontSize: 22,
-    color: "#ffffff",
-    textAlign: "center",
-  },
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-  },
-  infoBox: {
-    background: "#11162c",
-    borderRadius: 12,
-    padding: 12,
-  },
-  infoLabel: {
-    color: "#9ca3b7",
-    fontSize: 12,
-    fontWeight: 700,
-    marginBottom: 4,
-  },
-  infoValue: {
-    color: "#ffffff",
-    fontSize: 17,
-    fontWeight: 800,
-  },
-  buttonRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 12,
-    marginTop: 16,
-  },
-  primaryButton: {
-    background: "#00b7ff",
-    color: "#00111a",
-    border: 0,
-    borderRadius: 12,
-    padding: "15px 18px",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  yellowButton: {
-    background: "#ffd400",
-    color: "#090909",
-    border: 0,
-    borderRadius: 12,
-    padding: "15px 18px",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  secondaryButton: {
-    background: "#707070",
-    color: "#ffffff",
-    border: 0,
-    borderRadius: 12,
-    padding: "15px 18px",
-    fontSize: 18,
-    fontWeight: 900,
-  },
-  disabledButton: {
-    opacity: 0.45,
-  },
-  sunWarning: {
-    background: "rgba(255,90,90,0.14)",
-    color: "#ff7777",
-    border: "1px solid rgba(255,90,90,0.45)",
-    borderRadius: 12,
-    padding: 12,
-    fontWeight: 900,
-    marginTop: 14,
-    lineHeight: 1.4,
-    textAlign: "center",
-  },
-  targetName: {
-    textAlign: "center",
-    fontSize: 25,
-    marginBottom: 14,
-    color: "#ffffff",
-  },
-  lockText: {
-    color: "#15ff31",
-    textAlign: "center",
-    fontSize: 42,
-    fontWeight: 1000,
-    margin: "18px 0",
-  },
-  precisionGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 14,
-  },
-  directionBox: {
-    background: "#11162c",
-    borderRadius: 14,
-    padding: 16,
-    textAlign: "center",
-  },
-  bigYellow: {
-    color: "#ffd400",
-    fontSize: 30,
-    fontWeight: 1000,
-    lineHeight: 1.1,
-  },
-  okText: {
-    color: "#15ff31",
-    fontSize: 28,
-    fontWeight: 1000,
-    lineHeight: 1.1,
-  },
-  metric: {
-    color: "#a9adbd",
-    fontSize: 17,
-    fontWeight: 800,
-    marginTop: 8,
-  },
-  lockGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-    marginTop: 16,
-  },
-  greenBadge: {
-    background: "rgba(21,255,49,0.12)",
-    color: "#15ff31",
-    padding: 10,
-    borderRadius: 10,
-    textAlign: "center",
-    fontWeight: 900,
-  },
-  redBadge: {
-    background: "rgba(255,92,92,0.12)",
-    color: "#ff6666",
-    padding: 10,
-    borderRadius: 10,
-    textAlign: "center",
-    fontWeight: 900,
-  },
-  label: {
-    display: "block",
-    fontSize: 18,
-    fontWeight: 900,
-    marginBottom: 10,
-  },
-  select: {
-    width: "100%",
-    background: "#1b203a",
-    color: "#ffffff",
-    border: "2px solid #00b7ff",
-    borderRadius: 12,
-    padding: 15,
-    fontSize: 18,
-    fontWeight: 800,
-  },
-  tableCard: {
-    background: "#11162c",
-    borderRadius: 16,
-    overflow: "hidden",
-    marginBottom: 18,
-  },
-  tableHeader: {
-    display: "grid",
-    gridTemplateColumns: "1.1fr 0.9fr 0.9fr 1.2fr",
-    gap: 8,
-    padding: "14px 12px",
-    background: "#1b203a",
-    color: "#ffffff",
-    fontWeight: 900,
-    fontSize: 14,
-  },
-  tableRow: {
-    display: "grid",
-    gridTemplateColumns: "1.1fr 0.9fr 0.9fr 1.2fr",
-    gap: 8,
-    width: "100%",
-    padding: "16px 12px",
-    background: "transparent",
-    border: 0,
-    borderTop: "1px solid rgba(255,255,255,0.08)",
-    color: "#e8eaf5",
-    fontSize: 15,
-    fontWeight: 800,
-    textAlign: "left",
-  },
-  selectedRow: {
-    background: "#303755",
-  },
-  smallText: {
-    color: "#a9adbd",
-    fontSize: 15,
-    lineHeight: 1.4,
-  },
-  planList: {
-    display: "grid",
-    gap: 12,
-    marginTop: 14,
-  },
-  planItem: {
-    background: "#11162c",
-    color: "#f3f5ff",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 14,
-    padding: 14,
-    textAlign: "left",
-  },
-  selectedPlanItem: {
-    border: "1px solid rgba(255,212,0,0.65)",
-    boxShadow: "0 0 24px rgba(255,212,0,0.12)",
-  },
-  planTop: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    fontSize: 22,
-    marginBottom: 10,
-  },
-  planGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 8,
-    color: "#c8ccda",
-    fontSize: 14,
-    fontWeight: 800,
-  },
-  planAdvice: {
-    marginTop: 10,
-    color: "#ffd400",
-    fontWeight: 800,
-    fontSize: 14,
-    lineHeight: 1.35,
-  },
-  statusGood: {
-    color: "#15ff31",
-    fontWeight: 1000,
-  },
-  statusMedium: {
-    color: "#ffd400",
-    fontWeight: 1000,
-  },
-  statusBad: {
-    color: "#ff6666",
-    fontWeight: 1000,
-  },
-  statusSolar: {
-    color: "#ff9966",
-    fontWeight: 1000,
-  },
-  arCard: {
-    background: "#10162d",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    border: "1px solid rgba(0,183,255,0.35)",
-  },
-  disabledArCard: {
-    background: "#11162c",
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 18,
-    border: "1px solid rgba(255,90,90,0.35)",
-    opacity: 0.95,
-  },
-  noticeBox: {
-    background: "rgba(255,212,0,0.12)",
-    color: "#ffd400",
-    border: "1px solid rgba(255,212,0,0.35)",
-    borderRadius: 12,
-    padding: 12,
-    fontWeight: 800,
-    marginBottom: 12,
-    lineHeight: 1.4,
-  },
-  arFrame: {
-    position: "relative",
-    marginTop: 16,
-    background: "#000",
-    borderRadius: 18,
-    overflow: "hidden",
-    minHeight: 360,
-    border: "2px solid rgba(255,255,255,0.12)",
-  },
-  arVideo: {
-    width: "100%",
-    height: 420,
-    display: "block",
-    objectFit: "cover",
-  },
-  cameraPlaceholder: {
-    height: 420,
-    display: "grid",
-    placeItems: "center",
-    color: "#8d93aa",
-    fontWeight: 900,
-    fontSize: 18,
-  },
-  arOverlay: {
-    position: "absolute",
-    inset: 0,
-    pointerEvents: "none",
-  },
-  reticle: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    width: 96,
-    height: 96,
-    transform: "translate(-50%, -50%)",
-    border: "2px solid rgba(255,255,255,0.75)",
-    borderRadius: "50%",
-    boxShadow: "0 0 24px rgba(255,255,255,0.25)",
-  },
-  reticleH: {
-    position: "absolute",
-    left: -28,
-    right: -28,
-    top: "50%",
-    height: 2,
-    background: "rgba(255,255,255,0.75)",
-  },
-  reticleV: {
-    position: "absolute",
-    top: -28,
-    bottom: -28,
-    left: "50%",
-    width: 2,
-    background: "rgba(255,255,255,0.75)",
-  },
-  marker: {
-    position: "absolute",
-    transform: "translate(-50%, -50%)",
-    display: "grid",
-    placeItems: "center",
-    gap: 6,
-  },
-  markerOffscreen: {
-    opacity: 0.75,
-  },
-  markerDot: {
-    width: 34,
-    height: 34,
-    borderRadius: "50%",
-    border: "4px solid #ffd400",
-    boxShadow: "0 0 24px rgba(255,212,0,0.9)",
-    background: "rgba(255,212,0,0.15)",
-  },
-  markerLabel: {
-    color: "#ffd400",
-    fontSize: 15,
-    fontWeight: 1000,
-    textShadow: "0 2px 8px rgba(0,0,0,0.9)",
-  },
-  arInstruction: {
-    position: "absolute",
-    left: 14,
-    right: 14,
-    bottom: 14,
-    display: "grid",
-    gap: 6,
-    background: "rgba(0,0,0,0.65)",
-    borderRadius: 14,
-    padding: 14,
-    color: "#ffd400",
-    fontSize: 20,
-    fontWeight: 1000,
-    textAlign: "center",
-  },
-  arPreviewText: {
-    color: "#ffd400",
-    fontSize: 24,
-    fontWeight: 1000,
-  },
-  arInfoGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 8,
-    marginTop: 12,
-  },
-  arMiniMetric: {
-    background: "#11162c",
-    borderRadius: 10,
-    padding: 10,
-    color: "#e8eaf5",
-    fontWeight: 900,
-    textAlign: "center",
-  },
-  error: {
-    color: "#ff6666",
-    fontWeight: 800,
-    marginTop: 12,
-  },
+const inputStyle: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.16)",
+  background: "rgba(0,0,0,0.22)",
+  color: "#fff",
+  padding: "11px 12px",
+  fontSize: 15,
+  outline: "none",
 };
+
+const radarBoxStyle: CSSProperties = {
+  position: "relative",
+  height: 285,
+  borderRadius: 24,
+  overflow: "hidden",
+  background:
+    "radial-gradient(circle at 50% 90%, rgba(88,119,255,0.28) 0%, rgba(255,255,255,0.08) 45%, rgba(0,0,0,0.20) 100%)",
+  border: "1px solid rgba(255,255,255,0.14)",
+};
+
+const radarVerticalLineStyle: CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: 0,
+  bottom: 0,
+  width: 1,
+  background: "rgba(255,255,255,0.22)",
+};
+
+const radarHorizontalLineStyle: CSSProperties = {
+  position: "absolute",
+  left: 0,
+  right: 0,
+  bottom: "18%",
+  height: 1,
+  background: "rgba(255,255,255,0.18)",
+};
+
+const radarForwardStyle: CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  bottom: 12,
+  transform: "translateX(-50%)",
+  fontSize: 12,
+  letterSpacing: 1.4,
+  color: "rgba(244,247,255,0.62)",
+  fontWeight: 900,
+};
+
+export default App;
