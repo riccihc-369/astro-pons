@@ -1175,7 +1175,7 @@ useEffect(() => {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.4.1 — Quick Start Field UX</p>
+        <p style={styles.subtitle}>V6.4.2 — Safe Area + Field Warning Priority</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1774,7 +1774,9 @@ function FieldModePanel({
     : observable
       ? "OSSERVABILE"
       : target?.observationLabel?.toUpperCase() ?? "—";
-
+  const fieldPriorityText = isSolarTarget
+      ? "NON PUNTARE IL SOLE"
+      : fieldMessage;
   return (
     <section style={styles.fieldCard}>
       <div style={styles.fieldHeader}>FIELD MODE</div>
@@ -1789,19 +1791,30 @@ function FieldModePanel({
   ATTIVA BUSSOLA
 </button>
 
+{!observable && (
+  <div style={isSolarTarget ? styles.fieldSolarPriority : styles.fieldPriorityWarning}>
+    {fieldPriorityText}
+  </div>
+)}
+
 <FieldRadar target={target} heading={heading} />
-
       <div style={styles.fieldMainGrid}>
-        <div style={styles.fieldBigBox}>
-          <span>GUARDA</span>
-          <strong>{azimuthToCompass(target?.azimuth ?? null).toUpperCase()}</strong>
-        </div>
+  <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
+    <span>{observable ? "GUARDA" : "DIREZIONE GEOMETRICA"}</span>
+    <strong>{azimuthToCompass(target?.azimuth ?? null).toUpperCase()}</strong>
+  </div>
 
-        <div style={styles.fieldBigBox}>
-          <span>ALTEZZA</span>
-          <strong>{fieldAltitudeBand(target?.altitude ?? null)}</strong>
-        </div>
-      </div>
+  <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
+    <span>ALTEZZA</span>
+    <strong>{fieldAltitudeBand(target?.altitude ?? null)}</strong>
+  </div>
+</div>
+
+{observable && (
+  <div style={styles.fieldInstructionGood}>
+    {fieldMessage}
+  </div>
+)}
 
       <div style={observable ? styles.fieldInstructionGood : styles.fieldInstructionBad}>
         {fieldMessage}
@@ -2004,10 +2017,11 @@ function Info({ label, value }: { label: string; value: string }) {
 
 const styles: Record<string, CSSProperties> = {
   page: {
-    minHeight: "100vh",
-    background: "#05081f",
-    color: "#f3f5ff",
-    padding: "28px 16px 48px",
+  minHeight: "100vh",
+  background: "#05081f",
+  color: "#f3f5ff",
+  padding: "calc(56px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom))",
+  scrollPaddingTop: "calc(72px + env(safe-area-inset-top))",
     fontFamily:
       '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
   },
@@ -2406,6 +2420,40 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: "50%",
     border: "2px solid rgba(255,255,255,0.25)",
   },
+  fieldPriorityWarning: {
+  background: "rgba(255,102,102,0.14)",
+  color: "#ff6666",
+  border: "1px solid rgba(255,102,102,0.45)",
+  borderRadius: 16,
+  padding: 16,
+  fontSize: 30,
+  fontWeight: 1000,
+  textAlign: "center",
+  marginBottom: 16,
+},
+
+fieldSolarPriority: {
+  background: "rgba(255,90,90,0.18)",
+  color: "#ff7777",
+  border: "1px solid rgba(255,90,90,0.55)",
+  borderRadius: 16,
+  padding: 16,
+  fontSize: 28,
+  fontWeight: 1000,
+  textAlign: "center",
+  marginBottom: 16,
+},
+
+fieldBigBoxSecondary: {
+  background: "rgba(17,22,44,0.72)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 16,
+  padding: 16,
+  textAlign: "center",
+  display: "grid",
+  gap: 6,
+  opacity: 0.78,
+},
   fieldRadarRingMid: {
     position: "absolute",
     inset: "28%",
