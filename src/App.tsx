@@ -1175,7 +1175,7 @@ useEffect(() => {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.4 — Persisted Field Preferences</p>
+        <p style={styles.subtitle}>V6.4.1 — Quick Start Field UX</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1190,7 +1190,17 @@ useEffect(() => {
         </span>
         {gps.error && <p style={styles.error}>{gps.error}</p>}
       </section>
-
+{aimMode === "field" && (
+  <FieldModePanel
+    target={selectedTarget}
+    plan={currentSelectedPlan}
+    heading={correctedHeading}
+    fieldMessage={fieldMessage}
+    disabledReason={guidanceDisabledReason}
+    isSolarTarget={isSolarTarget}
+    onEnableCompass={enableCompass}
+  />
+)}
       {aimMode !== "field" && (
         <section style={styles.axisCard}>
           <div style={styles.axisTitle}>Regola fisica dello strumento</div>
@@ -1328,17 +1338,8 @@ useEffect(() => {
         )}
       </section>
 
-      {aimMode === "field" ? (
-        <FieldModePanel
-          target={selectedTarget}
-          plan={currentSelectedPlan}
-          heading={correctedHeading}
-          fieldMessage={fieldMessage}
-          disabledReason={guidanceDisabledReason}
-          isSolarTarget={isSolarTarget}
-          onEnableCompass={enableCompass}
-        />
-      ) : aimMode === "skyfinder" ? (
+      {aimMode === "field" ? null : aimMode === "skyfinder" ? (
+    
         <section style={styles.skyFinderCard}>
           <h2 style={styles.sectionTitle}>Sky Finder Radar</h2>
 
@@ -1781,10 +1782,14 @@ function FieldModePanel({
       <div style={styles.fieldTarget}>{target?.label?.toUpperCase() ?? "—"}</div>
 
       <div style={{ ...styles.fieldStatus, color }}>
-        {fieldStatusText}
-      </div>
+  {fieldStatusText}
+</div>
 
-      <FieldRadar target={target} heading={heading} />
+<button style={styles.fieldQuickCompassButton} onClick={onEnableCompass}>
+  ATTIVA BUSSOLA
+</button>
+
+<FieldRadar target={target} heading={heading} />
 
       <div style={styles.fieldMainGrid}>
         <div style={styles.fieldBigBox}>
@@ -2156,6 +2161,17 @@ const styles: Record<string, CSSProperties> = {
     gridTemplateColumns: "1fr",
     gap: 12,
   },
+  fieldQuickCompassButton: {
+  width: "100%",
+  background: "#00b7ff",
+  color: "#00111a",
+  border: 0,
+  borderRadius: 14,
+  padding: "16px 14px",
+  fontSize: 20,
+  fontWeight: 1000,
+  marginBottom: 16,
+},
   skyFinderCard: {
     background: "#101d2d",
     border: "2px solid rgba(0,183,255,0.45)",
