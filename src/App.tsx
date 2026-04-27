@@ -71,6 +71,22 @@ const OFFSET_KEY = "astroPons.compassOffsetDeg";
 const AIM_MODE_KEY = "astroPons.aimMode";
 const SELECTED_TARGET_KEY = "astroPons.selectedTarget";
 
+const FORECAST_HOURS = 12;
+const FORECAST_STEP_MINUTES = 15;
+
+const POINTER_AXIS =
+  "Asse di puntamento affidabile = lato corto superiore dell’iPhone.";
+
+const SKY_BODIES: SkyBody[] = [
+  { body: Body.Sun, label: "Sole" },
+  { body: Body.Moon, label: "Luna" },
+  { body: Body.Mercury, label: "Mercurio" },
+  { body: Body.Venus, label: "Venere" },
+  { body: Body.Mars, label: "Marte" },
+  { body: Body.Jupiter, label: "Giove" },
+  { body: Body.Saturn, label: "Saturno" },
+];
+
 function isAimMode(value: string | null): value is AimMode {
   return (
     value === "telescope" ||
@@ -96,21 +112,6 @@ function readStoredSelectedTarget(): string {
     return "Luna";
   }
 }
-const FORECAST_HOURS = 12;
-const FORECAST_STEP_MINUTES = 15;
-
-const POINTER_AXIS =
-  "Asse di puntamento affidabile = lato corto superiore dell’iPhone.";
-
-const SKY_BODIES: SkyBody[] = [
-  { body: Body.Sun, label: "Sole" },
-  { body: Body.Moon, label: "Luna" },
-  { body: Body.Mercury, label: "Mercurio" },
-  { body: Body.Venus, label: "Venere" },
-  { body: Body.Mars, label: "Marte" },
-  { body: Body.Jupiter, label: "Giove" },
-  { body: Body.Saturn, label: "Saturno" },
-];
 
 function normalize360(value: number): number {
   return ((value % 360) + 360) % 360;
@@ -649,12 +650,9 @@ export default function App() {
 
   const [rows, setRows] = useState<BodyRow[]>([]);
   const [selectedId, setSelectedId] = useState<string>(() =>
-  readStoredSelectedTarget()
-);
-
-const [aimMode, setAimMode] = useState<AimMode>(() =>
-  readStoredAimMode()
-);
+    readStoredSelectedTarget()
+  );
+  const [aimMode, setAimMode] = useState<AimMode>(() => readStoredAimMode());
 
   const [orientation, setOrientation] = useState<OrientationState>({
     enabled: false,
@@ -812,31 +810,33 @@ const [aimMode, setAimMode] = useState<AimMode>(() =>
 
     setIsStandalone(standalone);
   }, []);
-useEffect(() => {
-  try {
-    localStorage.setItem(AIM_MODE_KEY, aimMode);
-  } catch {
-    // Ignora errori localStorage.
-  }
-}, [aimMode]);
 
-useEffect(() => {
-  try {
-    localStorage.setItem(SELECTED_TARGET_KEY, selectedId);
-  } catch {
-    // Ignora errori localStorage.
-  }
-}, [selectedId]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(AIM_MODE_KEY, aimMode);
+    } catch {
+      // Ignora errori localStorage.
+    }
+  }, [aimMode]);
 
-useEffect(() => {
-  if (rows.length === 0) return;
+  useEffect(() => {
+    try {
+      localStorage.setItem(SELECTED_TARGET_KEY, selectedId);
+    } catch {
+      // Ignora errori localStorage.
+    }
+  }, [selectedId]);
 
-  const targetExists = rows.some((row) => row.id === selectedId);
+  useEffect(() => {
+    if (rows.length === 0) return;
 
-  if (!targetExists) {
-    setSelectedId("Luna");
-  }
-}, [rows, selectedId]);
+    const targetExists = rows.some((row) => row.id === selectedId);
+
+    if (!targetExists) {
+      setSelectedId("Luna");
+    }
+  }, [rows, selectedId]);
+
   useEffect(() => {
     if (!navigator.geolocation) {
       setGps((prev) => ({
@@ -1175,7 +1175,7 @@ useEffect(() => {
     <main style={styles.page}>
       <section style={styles.header}>
         <h1 style={styles.title}>Moon Compass</h1>
-        <p style={styles.subtitle}>V6.4.2 — Safe Area + Field Warning Priority</p>
+        <p style={styles.subtitle}>V6.4.3 — Compact Field Radar</p>
       </section>
 
       <section style={styles.statusCard}>
@@ -1190,17 +1190,19 @@ useEffect(() => {
         </span>
         {gps.error && <p style={styles.error}>{gps.error}</p>}
       </section>
-{aimMode === "field" && (
-  <FieldModePanel
-    target={selectedTarget}
-    plan={currentSelectedPlan}
-    heading={correctedHeading}
-    fieldMessage={fieldMessage}
-    disabledReason={guidanceDisabledReason}
-    isSolarTarget={isSolarTarget}
-    onEnableCompass={enableCompass}
-  />
-)}
+
+      {aimMode === "field" && (
+        <FieldModePanel
+          target={selectedTarget}
+          plan={currentSelectedPlan}
+          heading={correctedHeading}
+          fieldMessage={fieldMessage}
+          disabledReason={guidanceDisabledReason}
+          isSolarTarget={isSolarTarget}
+          onEnableCompass={enableCompass}
+        />
+      )}
+
       {aimMode !== "field" && (
         <section style={styles.axisCard}>
           <div style={styles.axisTitle}>Regola fisica dello strumento</div>
@@ -1339,7 +1341,6 @@ useEffect(() => {
       </section>
 
       {aimMode === "field" ? null : aimMode === "skyfinder" ? (
-    
         <section style={styles.skyFinderCard}>
           <h2 style={styles.sectionTitle}>Sky Finder Radar</h2>
 
@@ -1774,51 +1775,28 @@ function FieldModePanel({
     : observable
       ? "OSSERVABILE"
       : target?.observationLabel?.toUpperCase() ?? "—";
+
   const fieldPriorityText = isSolarTarget
-      ? "NON PUNTARE IL SOLE"
-      : fieldMessage;
+    ? "NON PUNTARE IL SOLE"
+    : fieldMessage;
+
   return (
     <section style={styles.fieldCard}>
       <div style={styles.fieldHeader}>FIELD MODE</div>
 
       <div style={styles.fieldTarget}>{target?.label?.toUpperCase() ?? "—"}</div>
 
-      <div style={{ ...styles.fieldStatus, color }}>
-  {fieldStatusText}
-</div>
+      <div style={{ ...styles.fieldStatus, color }}>{fieldStatusText}</div>
 
-<button style={styles.fieldQuickCompassButton} onClick={onEnableCompass}>
-  ATTIVA BUSSOLA
-</button>
+      <button style={styles.fieldQuickCompassButton} onClick={onEnableCompass}>
+        ATTIVA BUSSOLA
+      </button>
 
-{!observable && (
-  <div style={isSolarTarget ? styles.fieldSolarPriority : styles.fieldPriorityWarning}>
-    {fieldPriorityText}
-  </div>
-)}
-
-<FieldRadar target={target} heading={heading} />
-      <div style={styles.fieldMainGrid}>
-  <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
-    <span>{observable ? "GUARDA" : "DIREZIONE GEOMETRICA"}</span>
-    <strong>{azimuthToCompass(target?.azimuth ?? null).toUpperCase()}</strong>
-  </div>
-
-  <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
-    <span>ALTEZZA</span>
-    <strong>{fieldAltitudeBand(target?.altitude ?? null)}</strong>
-  </div>
-</div>
-
-{observable && (
-  <div style={styles.fieldInstructionGood}>
-    {fieldMessage}
-  </div>
-)}
-
-      <div style={observable ? styles.fieldInstructionGood : styles.fieldInstructionBad}>
-        {fieldMessage}
-      </div>
+      {!observable && (
+        <div style={isSolarTarget ? styles.fieldSolarPriority : styles.fieldPriorityWarning}>
+          {fieldPriorityText}
+        </div>
+      )}
 
       <div style={styles.fieldTimeGrid}>
         <div style={styles.fieldTimeBox}>
@@ -1837,21 +1815,33 @@ function FieldModePanel({
 
         <div style={styles.fieldTimeBox}>
           <span style={styles.fieldTimeLabel}>MIGLIORE</span>
-          <strong style={styles.fieldTimeValue}>
-            {plan?.bestTime ?? "—"}
-          </strong>
+          <strong style={styles.fieldTimeValue}>{plan?.bestTime ?? "—"}</strong>
         </div>
       </div>
+
+      <FieldRadar target={target} heading={heading} />
+
+      <div style={styles.fieldMainGrid}>
+        <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
+          <span>{observable ? "GUARDA" : "DIREZIONE"}</span>
+          <strong>{azimuthToCompass(target?.azimuth ?? null).toUpperCase()}</strong>
+        </div>
+
+        <div style={observable ? styles.fieldBigBox : styles.fieldBigBoxSecondary}>
+          <span>ALTEZZA</span>
+          <strong>{fieldAltitudeBand(target?.altitude ?? null)}</strong>
+        </div>
+      </div>
+
+      {observable && (
+        <div style={styles.fieldInstructionGood}>{fieldMessage}</div>
+      )}
 
       {disabledReason && (
         <div style={isSolarTarget ? styles.sunWarning : styles.noticeBox}>
           {disabledReason}
         </div>
       )}
-
-      <button style={styles.fieldCompassButton} onClick={onEnableCompass}>
-        ATTIVA / RIATTIVA BUSSOLA
-      </button>
 
       <div style={styles.fieldAxis}>
         Freccia blu = lato corto superiore dell’iPhone
@@ -2017,11 +2007,12 @@ function Info({ label, value }: { label: string; value: string }) {
 
 const styles: Record<string, CSSProperties> = {
   page: {
-  minHeight: "100vh",
-  background: "#05081f",
-  color: "#f3f5ff",
-  padding: "calc(56px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom))",
-  scrollPaddingTop: "calc(72px + env(safe-area-inset-top))",
+    minHeight: "100vh",
+    background: "#05081f",
+    color: "#f3f5ff",
+    padding:
+      "calc(56px + env(safe-area-inset-top)) 16px calc(48px + env(safe-area-inset-bottom))",
+    scrollPaddingTop: "calc(72px + env(safe-area-inset-top))",
     fontFamily:
       '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
   },
@@ -2175,17 +2166,6 @@ const styles: Record<string, CSSProperties> = {
     gridTemplateColumns: "1fr",
     gap: 12,
   },
-  fieldQuickCompassButton: {
-  width: "100%",
-  background: "#00b7ff",
-  color: "#00111a",
-  border: 0,
-  borderRadius: 14,
-  padding: "16px 14px",
-  fontSize: 20,
-  fontWeight: 1000,
-  marginBottom: 16,
-},
   skyFinderCard: {
     background: "#101d2d",
     border: "2px solid rgba(0,183,255,0.45)",
@@ -2376,37 +2356,97 @@ const styles: Record<string, CSSProperties> = {
     background: "#050b18",
     border: "2px solid rgba(0,183,255,0.65)",
     borderRadius: 18,
-    padding: 18,
+    padding: 16,
     marginBottom: 18,
     boxShadow: "0 0 34px rgba(0,183,255,0.14)",
   },
   fieldHeader: {
     color: "#00b7ff",
     textAlign: "center",
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 1000,
     letterSpacing: 2,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   fieldTarget: {
     color: "#ffffff",
     textAlign: "center",
-    fontSize: 50,
+    fontSize: 44,
     lineHeight: 1,
     fontWeight: 1000,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   fieldStatus: {
     textAlign: "center",
-    fontSize: 26,
+    fontSize: 24,
+    fontWeight: 1000,
+    marginBottom: 12,
+  },
+  fieldQuickCompassButton: {
+    width: "100%",
+    background: "#00b7ff",
+    color: "#00111a",
+    border: 0,
+    borderRadius: 14,
+    padding: "14px 14px",
+    fontSize: 20,
     fontWeight: 1000,
     marginBottom: 14,
   },
+  fieldPriorityWarning: {
+    background: "rgba(255,102,102,0.14)",
+    color: "#ff6666",
+    border: "1px solid rgba(255,102,102,0.45)",
+    borderRadius: 16,
+    padding: 14,
+    fontSize: 30,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  fieldSolarPriority: {
+    background: "rgba(255,90,90,0.18)",
+    color: "#ff7777",
+    border: "1px solid rgba(255,90,90,0.55)",
+    borderRadius: 16,
+    padding: 14,
+    fontSize: 28,
+    fontWeight: 1000,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  fieldTimeGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 8,
+    marginBottom: 12,
+  },
+  fieldTimeBox: {
+    background: "#11162c",
+    borderRadius: 12,
+    padding: "10px 6px",
+    display: "grid",
+    gap: 4,
+    textAlign: "center",
+    minWidth: 0,
+  },
+  fieldTimeLabel: {
+    color: "#a9adbd",
+    fontSize: 11,
+    fontWeight: 1000,
+    letterSpacing: 0.8,
+    whiteSpace: "nowrap",
+  },
+  fieldTimeValue: {
+    color: "#ffffff",
+    fontSize: 19,
+    fontWeight: 1000,
+  },
   fieldRadar: {
     position: "relative",
-    width: "min(100%, 360px)",
+    width: "min(100%, 292px)",
     aspectRatio: "1 / 1",
-    margin: "0 auto 16px",
+    margin: "0 auto 12px",
     borderRadius: "50%",
     background:
       "radial-gradient(circle at center, rgba(0,183,255,0.20), rgba(5,8,31,0.94) 63%, rgba(5,8,31,1))",
@@ -2420,40 +2460,6 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: "50%",
     border: "2px solid rgba(255,255,255,0.25)",
   },
-  fieldPriorityWarning: {
-  background: "rgba(255,102,102,0.14)",
-  color: "#ff6666",
-  border: "1px solid rgba(255,102,102,0.45)",
-  borderRadius: 16,
-  padding: 16,
-  fontSize: 30,
-  fontWeight: 1000,
-  textAlign: "center",
-  marginBottom: 16,
-},
-
-fieldSolarPriority: {
-  background: "rgba(255,90,90,0.18)",
-  color: "#ff7777",
-  border: "1px solid rgba(255,90,90,0.55)",
-  borderRadius: 16,
-  padding: 16,
-  fontSize: 28,
-  fontWeight: 1000,
-  textAlign: "center",
-  marginBottom: 16,
-},
-
-fieldBigBoxSecondary: {
-  background: "rgba(17,22,44,0.72)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 16,
-  padding: 16,
-  textAlign: "center",
-  display: "grid",
-  gap: 6,
-  opacity: 0.78,
-},
   fieldRadarRingMid: {
     position: "absolute",
     inset: "28%",
@@ -2484,45 +2490,45 @@ fieldBigBoxSecondary: {
   },
   fieldRadarN: {
     position: "absolute",
-    top: 8,
+    top: 6,
     left: "50%",
     transform: "translateX(-50%)",
     color: "#ffffff",
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 1000,
   },
   fieldRadarE: {
     position: "absolute",
-    right: 10,
+    right: 8,
     top: "50%",
     transform: "translateY(-50%)",
     color: "#ffffff",
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 1000,
   },
   fieldRadarS: {
     position: "absolute",
-    bottom: 8,
+    bottom: 6,
     left: "50%",
     transform: "translateX(-50%)",
     color: "#ffffff",
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 1000,
   },
   fieldRadarW: {
     position: "absolute",
-    left: 10,
+    left: 8,
     top: "50%",
     transform: "translateY(-50%)",
     color: "#ffffff",
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 1000,
   },
   fieldRadarHeading: {
     position: "absolute",
     left: "50%",
     top: "50%",
-    width: 6,
+    width: 5,
     height: "43%",
     transformOrigin: "50% 100%",
     background: "#00b7ff",
@@ -2531,8 +2537,8 @@ fieldBigBoxSecondary: {
   },
   fieldRadarDot: {
     position: "absolute",
-    width: 32,
-    height: 32,
+    width: 28,
+    height: 28,
     borderRadius: "50%",
     transform: "translate(-50%, -50%)",
     border: "4px solid rgba(255,255,255,0.96)",
@@ -2540,36 +2546,46 @@ fieldBigBoxSecondary: {
   },
   fieldRadarLabel: {
     position: "absolute",
-    transform: "translate(-50%, 22px)",
-    fontSize: 18,
+    transform: "translate(-50%, 20px)",
+    fontSize: 16,
     fontWeight: 1000,
     textShadow: "0 2px 10px rgba(0,0,0,1)",
     zIndex: 6,
   },
   fieldMainGrid: {
     display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 12,
-    marginBottom: 12,
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+    marginBottom: 10,
   },
   fieldBigBox: {
     background: "#11162c",
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 14,
+    padding: 12,
     textAlign: "center",
     display: "grid",
-    gap: 6,
+    gap: 5,
+  },
+  fieldBigBoxSecondary: {
+    background: "rgba(17,22,44,0.72)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 14,
+    padding: 12,
+    textAlign: "center",
+    display: "grid",
+    gap: 5,
+    opacity: 0.78,
   },
   fieldInstructionGood: {
     background: "rgba(21,255,49,0.12)",
     color: "#15ff31",
     border: "1px solid rgba(21,255,49,0.35)",
     borderRadius: 16,
-    padding: 16,
-    fontSize: 30,
+    padding: 14,
+    fontSize: 28,
     fontWeight: 1000,
     textAlign: "center",
-    marginBottom: 12,
+    marginBottom: 10,
   },
   fieldInstructionBad: {
     background: "rgba(255,102,102,0.12)",
@@ -2582,52 +2598,16 @@ fieldBigBoxSecondary: {
     textAlign: "center",
     marginBottom: 12,
   },
-  fieldTimeGrid: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 10,
-    marginBottom: 12,
-  },
-  fieldTimeBox: {
-    background: "#11162c",
-    borderRadius: 14,
-    padding: 14,
-    display: "grid",
-    gap: 6,
-    textAlign: "center",
-  },
-  fieldTimeLabel: {
-    color: "#a9adbd",
-    fontSize: 15,
-    fontWeight: 1000,
-    letterSpacing: 1,
-  },
-  fieldTimeValue: {
-    color: "#ffffff",
-    fontSize: 24,
-    fontWeight: 1000,
-  },
-  fieldCompassButton: {
-    width: "100%",
-    background: "#00b7ff",
-    color: "#00111a",
-    border: 0,
-    borderRadius: 14,
-    padding: "16px 14px",
-    fontSize: 18,
-    fontWeight: 1000,
-    marginTop: 8,
-  },
   fieldAxis: {
     background: "rgba(0,183,255,0.10)",
     color: "#00b7ff",
     border: "1px solid rgba(0,183,255,0.35)",
     borderRadius: 14,
-    padding: 12,
-    fontSize: 16,
+    padding: 10,
+    fontSize: 14,
     fontWeight: 1000,
     textAlign: "center",
-    marginTop: 12,
+    marginTop: 10,
   },
   solarSafeCard: {
     background: "#21192c",
