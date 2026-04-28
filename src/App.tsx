@@ -2662,6 +2662,7 @@ function App() {
                   margin: 0,
                   fontSize: fieldMode ? 25 : 31,
                   lineHeight: 1.05,
+                  color: "#f4f7ff",
                 }}
               >
                 Sky Field
@@ -2709,7 +2710,9 @@ function App() {
           }}
         >
           <div style={cardStyle}>
-            <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>Base</h2>
+            <h2 style={{ margin: "0 0 12px", fontSize: 20, color: "#f4f7ff" }}>
+  Base
+</h2>
 
             <div
               style={{
@@ -2804,9 +2807,9 @@ function App() {
           </div>
 
           <div style={cardStyle}>
-            <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>
-              Calibration Pro
-            </h2>
+            <h2 style={{ margin: "0 0 12px", fontSize: 20, color: "#f4f7ff" }}>
+  Base
+</h2>
 
             <div
               style={{
@@ -2982,7 +2985,9 @@ function App() {
             }}
           >
             <div>
-              <h2 style={{ margin: 0, fontSize: 20 }}>Radar pulito</h2>
+              <h2 style={{ margin: "0 0 12px", fontSize: 20, color: "#f4f7ff" }}>
+  Base
+</h2>
               <p style={{ ...mutedStyle, margin: "5px 0 0" }}>
                 Etichette limitate; gli oggetti secondari diventano puntini.
               </p>
