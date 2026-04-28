@@ -97,20 +97,32 @@ type HeadingSample = {
   heading: number;
 };
 
+type MoonImpactSeverity = "none" | "low" | "medium" | "high" | "extreme";
+
+type MoonImpact = {
+  severity: MoonImpactSeverity;
+  label: string;
+  detail: string;
+  penalty: number;
+  angularDistance: number | null;
+  moonAltitude: number | null;
+  illumination: number | null;
+};
+
 type AdvisorSample = {
   date: Date;
   altitude: number;
   azimuth: number;
   sunAltitude: number;
   usable: boolean;
+  geometryUsable: boolean;
+  moonImpact: MoonImpact;
 };
-
 type AdvisorWindow = {
   start: Date;
   end: Date;
   minutes: number;
 };
-
 type VisibilityAdvice = SkyObject & {
   currentAltitude: number;
   currentAzimuth: number;
@@ -119,10 +131,17 @@ type VisibilityAdvice = SkyObject & {
   bestAzimuth: number;
   usefulWindows: AdvisorWindow[];
   usefulMinutes: number;
-  status: "Ora" | "Più tardi" | "Basso" | "Non consigliato" | "Sole";
+    status:
+    | "Ora"
+    | "Più tardi"
+    | "Basso"
+    | "Non consigliato"
+    | "Sole"
+    | "Luna forte";
   reason: string;
   advisorScore: number;
   isCurrentlyUseful: boolean;
+  moonImpact: MoonImpact;
   seasonLabel: string;
 };
 
@@ -894,7 +913,224 @@ function safeNumber(value: string): number | null {
   const n = Number(value.replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
+function noMoonImpact(): MoonImpact {
+  return {
+    severity: "none",
+    label: "Luna non disturbante",
+    detail: "La Luna non penalizza in modo significativo questo oggetto.",
+    penalty: 0,
+    angularDistance: null,
+    moonAltitude: null,
+    illumination: null,
+  };
+}
 
+function degToRad(deg: number): number {
+  return (deg * Math.PI) / 180;
+}
+
+function angularSeparationEqDeg(
+  ra1Hours: number,
+  dec1Deg: number,
+  ra2Hours: number,
+  dec2Deg: number
+): number {
+  const ra1 = degToRad(ra1Hours * 15);
+  const ra2 = degToRad(ra2Hours * 15);
+  const dec1 = degToRad(dec1Deg);
+  const dec2 = degToRad(dec2Deg);
+
+  const cosSep =
+    Math.sin(dec1) * Math.sin(dec2) +
+    Math.cos(dec1) * Math.cos(dec2) * Math.cos(ra1 - ra2);
+
+  const clamped = Math.max(-1, Math.min(1, cosSep));
+  return Math.acos(clamped) * (180 / Math.PI);
+}
+
+function getEquatorial(
+  obj: SkyObject,
+  date: Date,
+  observer: Observer
+): { ra: number; dec: number } | null {
+  try {
+    if (obj.kind === "body" && obj.body) {
+      const eq = Equator(obj.body, date, observer, true, true);
+      return {
+        ra: eq.ra,
+        dec: eq.dec,
+      };
+    }
+
+    if (
+      (obj.kind === "star" || obj.kind === "dso") &&
+      typeof obj.raHours === "number" &&
+      typeof obj.decDeg === "number"
+    ) {
+      return {
+        ra: obj.raHours,
+        dec: obj.decDeg,
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getMoonIlluminationFraction(date: Date, observer: Observer): number | null {
+  const sunObj = SKY_OBJECTS.find((o) => o.label === "Sole");
+  const moonObj = SKY_OBJECTS.find((o) => o.label === "Luna");
+
+  if (!sunObj || !moonObj) return null;
+
+  const sunEq = getEquatorial(sunObj, date, observer);
+  const moonEq = getEquatorial(moonObj, date, observer);
+
+  if (!sunEq || !moonEq) return null;
+
+  const elongation = angularSeparationEqDeg(
+    sunEq.ra,
+    sunEq.dec,
+    moonEq.ra,
+    moonEq.dec
+  );
+
+  // 0 = Luna nuova circa, 1 = Luna piena circa.
+  return (1 - Math.cos(degToRad(elongation))) / 2;
+}
+
+function getMoonImpactForObject(
+  obj: SkyObject,
+  date: Date,
+  observer: Observer
+): MoonImpact {
+  if (obj.label === "Sole" || obj.label === "Luna") {
+    return noMoonImpact();
+  }
+
+  const moonObj = SKY_OBJECTS.find((o) => o.label === "Luna");
+  if (!moonObj) return noMoonImpact();
+
+  const moonAltAz = getAltAz(moonObj, date, observer);
+  const moonEq = getEquatorial(moonObj, date, observer);
+  const objEq = getEquatorial(obj, date, observer);
+  const illumination = getMoonIlluminationFraction(date, observer);
+
+  if (!moonAltAz || !moonEq || !objEq || illumination === null) {
+    return noMoonImpact();
+  }
+
+  const angularDistance = angularSeparationEqDeg(
+    objEq.ra,
+    objEq.dec,
+    moonEq.ra,
+    moonEq.dec
+  );
+
+  if (moonAltAz.altitude < -3 || illumination < 0.12) {
+    return {
+      severity: "none",
+      label: "Luna poco influente",
+      detail: "La Luna è bassa o poco illuminata: disturbo trascurabile.",
+      penalty: 0,
+      angularDistance,
+      moonAltitude: moonAltAz.altitude,
+      illumination,
+    };
+  }
+
+  // Per ora penalizziamo soprattutto deep-sky e oggetti deboli.
+  const isSensitive =
+    obj.kind === "dso" || obj.label === "Urano" || obj.label === "Nettuno";
+
+  if (!isSensitive) {
+    return {
+      severity: "none",
+      label: "Luna non critica",
+      detail: "La Luna non compromette in modo importante questo oggetto luminoso.",
+      penalty: 0,
+      angularDistance,
+      moonAltitude: moonAltAz.altitude,
+      illumination,
+    };
+  }
+
+  let distanceFactor = 0.15;
+  if (angularDistance < 20) distanceFactor = 1.0;
+  else if (angularDistance < 40) distanceFactor = 0.82;
+  else if (angularDistance < 70) distanceFactor = 0.58;
+  else if (angularDistance < 100) distanceFactor = 0.34;
+
+  let illuminationFactor = 0.25;
+  if (illumination > 0.85) illuminationFactor = 1.0;
+  else if (illumination > 0.6) illuminationFactor = 0.78;
+  else if (illumination > 0.35) illuminationFactor = 0.52;
+
+  let altitudeFactor = 0.25;
+  if (moonAltAz.altitude > 45) altitudeFactor = 1.0;
+  else if (moonAltAz.altitude > 20) altitudeFactor = 0.78;
+  else if (moonAltAz.altitude > 5) altitudeFactor = 0.55;
+
+  let difficultyFactor = 1.0;
+  if (obj.kind === "dso") {
+    if (obj.difficulty === "facile") difficultyFactor = 0.72;
+    if (obj.difficulty === "media") difficultyFactor = 1.0;
+    if (obj.difficulty === "difficile") difficultyFactor = 1.18;
+  }
+
+  const penalty = Math.round(
+    85 * distanceFactor * illuminationFactor * altitudeFactor * difficultyFactor
+  );
+
+  let severity: MoonImpactSeverity = "low";
+  if (penalty >= 58) severity = "extreme";
+  else if (penalty >= 40) severity = "high";
+  else if (penalty >= 22) severity = "medium";
+
+  const illuminationPct = Math.round(illumination * 100);
+
+  let label = "Luna poco disturbante";
+  let detail = `Luna illuminata al ${illuminationPct}%, distanza ${fmt(
+    angularDistance,
+    0
+  )}°: disturbo moderato.`;
+
+  if (severity === "medium") {
+    label = "Luna moderata";
+    detail = `Luna abbastanza presente: illuminazione ${illuminationPct}%, distanza ${fmt(
+      angularDistance,
+      0
+    )}°. Il contrasto deep-sky può calare.`;
+  }
+
+  if (severity === "high") {
+    label = "Luna forte";
+    detail = `Luna forte per questo oggetto: illuminazione ${illuminationPct}%, distanza ${fmt(
+      angularDistance,
+      0
+    )}°. Oggetto geometricamente visibile, ma contrasto ridotto.`;
+  }
+
+  if (severity === "extreme") {
+    label = "Luna molto invasiva";
+    detail = `Luna molto invasiva: illuminazione ${illuminationPct}%, distanza ${fmt(
+      angularDistance,
+      0
+    )}°. Per deep-sky deboli è meglio aspettare un’altra finestra.`;
+  }
+
+  return {
+    severity,
+    label,
+    detail,
+    penalty,
+    angularDistance,
+    moonAltitude: moonAltAz.altitude,
+    illumination,
+  };
+}
 function getAltAz(obj: SkyObject, date: Date, observer: Observer): AltAz | null {
   try {
     let ra: number;
@@ -1091,12 +1327,19 @@ function makeAdviceForObject(params: {
 
     if (!altAz || !sunAltAz) continue;
 
-    const usable = isSampleUsable({
+    const geometryUsable = isSampleUsable({
       obj,
       altitude: altAz.altitude,
       sunAltitude: sunAltAz.altitude,
       minUsefulAltitude,
     });
+
+    const moonImpact = getMoonImpactForObject(obj, date, observer);
+
+    const moonBlocksSample =
+      obj.kind === "dso" && moonImpact.severity === "extreme";
+
+    const usable = geometryUsable && !moonBlocksSample;
 
     samples.push({
       date,
@@ -1104,22 +1347,45 @@ function makeAdviceForObject(params: {
       azimuth: altAz.azimuth,
       sunAltitude: sunAltAz.altitude,
       usable,
+      geometryUsable,
+      moonImpact,
     });
   }
 
   if (samples.length === 0) return null;
 
+  function sampleScore(sample: AdvisorSample): number {
+    const moonWeight = obj.kind === "dso" ? 0.75 : 0.25;
+    return sample.altitude - sample.moonImpact.penalty * moonWeight;
+  }
+
   const usefulWindows = buildUsefulWindows(samples);
+  const geometryWindows = buildUsefulWindows(
+    samples.map((s) => ({
+      ...s,
+      usable: s.geometryUsable,
+    }))
+  );
+
   const usefulMinutes = usefulWindows.reduce((sum, w) => sum + w.minutes, 0);
 
   const bestUsable = samples
     .filter((s) => s.usable)
-    .sort((a, b) => b.altitude - a.altitude)[0];
+    .sort((a, b) => sampleScore(b) - sampleScore(a))[0];
 
-  const bestOverall = [...samples].sort((a, b) => b.altitude - a.altitude)[0];
-  const best = bestUsable ?? bestOverall;
+  const bestGeometry = samples
+    .filter((s) => s.geometryUsable)
+    .sort((a, b) => sampleScore(b) - sampleScore(a))[0];
+
+  const bestOverall = [...samples].sort(
+    (a, b) => sampleScore(b) - sampleScore(a)
+  )[0];
+
+  const best = bestUsable ?? bestGeometry ?? bestOverall;
 
   const isCurrentlyUseful = samples[0]?.usable ?? false;
+  const currentMoonImpact = samples[0]?.moonImpact ?? noMoonImpact();
+  const bestMoonImpact = best?.moonImpact ?? noMoonImpact();
 
   let status: VisibilityAdvice["status"] = "Non consigliato";
   let reason = "";
@@ -1127,22 +1393,55 @@ function makeAdviceForObject(params: {
   const requiredSun = requiredSunAltitudeForObject(obj);
   const minAlt = usefulAltitudeForObject(obj, minUsefulAltitude);
 
+  const moonBlocked =
+    obj.kind === "dso" &&
+    geometryWindows.length > 0 &&
+    usefulWindows.length === 0 &&
+    samples.some(
+      (s) => s.geometryUsable && s.moonImpact.severity === "extreme"
+    );
+
   if (obj.label === "Sole") {
     status = "Sole";
     reason = "Non osservare direttamente il Sole senza filtri certificati.";
+  } else if (moonBlocked) {
+    status = "Luna forte";
+    reason = `Geometricamente ci sarebbe una finestra utile: ${formatWindow(
+      geometryWindows[0]
+    )}. Però ${bestMoonImpact.detail}`;
   } else if (isCurrentlyUseful) {
     status = "Ora";
-    if (best.date.getTime() > baseTime.getTime() + 20 * 60_000) {
+
+    if (
+      obj.kind === "dso" &&
+      (currentMoonImpact.severity === "high" ||
+        currentMoonImpact.severity === "extreme")
+    ) {
+      status = "Luna forte";
+      reason = currentMoonImpact.detail;
+    } else if (best.date.getTime() > baseTime.getTime() + 20 * 60_000) {
       reason = `Già osservabile. Meglio verso le ${formatTime(best.date)}.`;
     } else {
       reason = "Buono adesso.";
     }
   } else if (usefulWindows.length > 0) {
     status = "Più tardi";
-    reason = `Prossima finestra utile: ${formatWindow(usefulWindows[0])}.`;
+
+    if (
+      obj.kind === "dso" &&
+      (bestMoonImpact.severity === "high" ||
+        bestMoonImpact.severity === "extreme")
+    ) {
+      status = "Luna forte";
+      reason = `La finestra geometrica esiste, ma ${bestMoonImpact.detail}`;
+    } else {
+      reason = `Prossima finestra utile: ${formatWindow(usefulWindows[0])}.`;
+    }
   } else if (bestOverall.altitude > 0 && bestOverall.altitude < minAlt) {
     status = "Basso";
-    reason = `Resta basso: massimo ${fmt(bestOverall.altitude)}° nelle prossime ${ADVISOR_SCAN_HOURS} ore.`;
+    reason = `Resta basso: massimo ${fmt(
+      bestOverall.altitude
+    )}° nelle prossime ${ADVISOR_SCAN_HOURS} ore.`;
   } else if (
     bestOverall.altitude >= minAlt &&
     objectRequiresDarkSky(obj) &&
@@ -1173,15 +1472,19 @@ function makeAdviceForObject(params: {
 
   if (obj.kind === "dso") {
     advisorScore += 15;
+
     if (typeof obj.mag === "number") {
       advisorScore += Math.max(0, 7 - obj.mag) * 2;
     }
+
+    advisorScore -= bestMoonImpact.penalty;
   }
 
   if (isCurrentlyUseful) advisorScore += 45;
   if (status === "Più tardi") advisorScore += 20;
   if (status === "Basso") advisorScore -= 35;
   if (status === "Non consigliato") advisorScore -= 70;
+  if (status === "Luna forte") advisorScore -= 35;
 
   return {
     ...obj,
@@ -1196,12 +1499,14 @@ function makeAdviceForObject(params: {
     reason,
     advisorScore,
     isCurrentlyUseful,
+    moonImpact: bestMoonImpact,
     seasonLabel: seasonLabel(obj),
   };
 }
 
 function getStatusColor(status: VisibilityAdvice["status"]): string {
   if (status === "Ora") return "#7CFF9B";
+  if (status === "Luna forte") return "#CDA3FF";
   if (status === "Più tardi") return "#FFE27A";
   if (status === "Basso") return "#FFB86B";
   if (status === "Sole") return "#FF8A6B";
@@ -1606,7 +1911,20 @@ function ObjectMediaCard({
               {advice.reason}
             </div>
           )}
-
+{advice && advice.moonImpact.severity !== "none" && (
+  <div
+    style={{
+      padding: 13,
+      borderRadius: 18,
+      background: "rgba(205,163,255,0.10)",
+      border: "1px solid rgba(205,163,255,0.28)",
+      lineHeight: 1.45,
+      color: "#efe5ff",
+    }}
+  >
+        <strong>Luna:</strong> {advice.moonImpact.detail}
+        </div>
+    )}
           <button style={smallButtonStyleBase} onClick={onUseAsTarget}>
             Usa come target
           </button>
@@ -2349,7 +2667,7 @@ function App() {
                 Sky Field
               </h1>
               <p style={{ ...mutedStyle, margin: "6px 0 0" }}>
-                V6.8 — Clean Radar + Object Media Card
+                V6.9 — Moon Disturbance Factor
               </p>
             </div>
 
@@ -2899,7 +3217,27 @@ function App() {
                   </div>
 
                   <div style={{ color: "#dce4ff" }}>{item.reason}</div>
-
+{item.moonImpact.severity !== "none" && (
+  <div
+    style={{
+      padding: 10,
+      borderRadius: 14,
+      background: "rgba(205,163,255,0.10)",
+      border: "1px solid rgba(205,163,255,0.25)",
+      color: "#efe5ff",
+      fontSize: fieldMode ? 15 : 14,
+      lineHeight: 1.4,
+    }}
+  >
+    <strong>Luna:</strong> {item.moonImpact.label} ·{" "}
+    {item.moonImpact.illumination !== null
+      ? `${Math.round(item.moonImpact.illumination * 100)}%`
+      : "—"}
+    {item.moonImpact.angularDistance !== null
+      ? ` · distanza ${fmt(item.moonImpact.angularDistance, 0)}°`
+      : ""}
+  </div>
+)}
                   <div
                     style={{
                       display: "flex",
@@ -3025,7 +3363,27 @@ function App() {
                   </div>
 
                   <div style={{ color: "#dce4ff" }}>{item.reason}</div>
-
+{item.moonImpact.severity !== "none" && (
+  <div
+    style={{
+      padding: 10,
+      borderRadius: 14,
+      background: "rgba(205,163,255,0.10)",
+      border: "1px solid rgba(205,163,255,0.25)",
+      color: "#efe5ff",
+      fontSize: fieldMode ? 15 : 14,
+      lineHeight: 1.4,
+    }}
+  >
+    <strong>Luna:</strong> {item.moonImpact.label} ·{" "}
+    {item.moonImpact.illumination !== null
+      ? `${Math.round(item.moonImpact.illumination * 100)}%`
+      : "—"}
+    {item.moonImpact.angularDistance !== null
+      ? ` · distanza ${fmt(item.moonImpact.angularDistance, 0)}°`
+      : ""}
+  </div>
+)}
                   <div
                     style={{
                       display: "flex",
@@ -3222,7 +3580,7 @@ function App() {
 
         <section style={cardStyle}>
           <h2 style={{ margin: "0 0 10px", fontSize: 20 }}>
-            Note pratiche V6.8
+            Note pratiche V6.9
           </h2>
 
           <div style={{ display: "grid", gap: 8, color: "#dce4ff" }}>
@@ -3244,8 +3602,7 @@ function App() {
               visualizzazione grafica interna.
             </div>
             <div>
-              5. La scheda “Per bambini” serve a rendere l’oggetto interessante
-              anche senza leggere numeri e coordinate.
+             5. Il Moon Disturbance Factor penalizza gli oggetti deep-sky quando la Luna è alta, luminosa o troppo vicina.
             </div>
           </div>
         </section>
